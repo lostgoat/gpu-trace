@@ -5,7 +5,10 @@ set -o pipefail
 set -o nounset
 
 # parameter defaults
-VERBOSE="1"
+UNINIT="UNINITMAGIC"
+VERBOSE=0
+PID="${UNINIT}"
+PID_POLL_PRECISION="0.01"
 
 function pVerbose () {
     if [ "${VERBOSE}" == "1" ]; then
@@ -17,22 +20,49 @@ function pErr () {
     echo -e $@
 }
 
+function die () {
+    if [ $# -ne 0 ]; then
+        pErr $@
+    fi
+    exit 1
+}
+
 function printUsage() {
-    pErr "$(basename $0 
+    pErr "Usage: $(basename $0) [options]"
+    pErr
+    pErr "Options:"
+    pErr "    -p, --pid <pid>       Trace for the lifetime of <pid>"
+    pErr "    -v, --verbose         Verbose Output"
+    pErr "    -h, --help            Print this help menu and exit"
 }
 
 function waitForProcess () {
-    local pid="$0"
+    local pid="$1"
+    local pidFile="/proc/$pid"
 
-    pVerbose "Waiting for $pid"
+    if [ ! -e ${pidFile} ]; then
+        pErr "Could not find process: $pid. Did it already exit?"
+        return
+    fi
+
+    pVerbose "Waiting for process: $pid"
+
+    # Can't do event based wait for PID unless it is a child PID
+    # We are most likely interested in an external PID
+    while [ -e /proc/$pid ]; do
+        sleep ${PID_POLL_PRECISION};
+    done
+
+    pVerbose "Finished waiting for process: $pid"
 }
-
-waitForProcess andres
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -a) echo "-a is set"; shift ;;
-        -b) echo "-b is set"; shift ;;
-        *) echo "Unknown option $1"; printUsage; exit ;;
+        -v|--verbose) VERBOSE=1; shift ;;
+        -p|--pid) PID=$2; shift 2 ;;
+        -h|--help) printUsage; exit ;;
+        *) echo "Unknown option $1"; printUsage; die;;
     esac
 done
+
+waitForProcess $PID
