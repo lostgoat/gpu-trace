@@ -1,3 +1,38 @@
 #!/bin/bash
 
-echo hello $0
+set -e
+set -o pipefail
+set -o nounset
+
+# parameter defaults
+VERBOSE="1"
+
+function pVerbose () {
+    if [ "${VERBOSE}" == "1" ]; then
+        echo $@
+    fi
+}
+
+function pErr () {
+    echo -e $@
+}
+
+function printUsage() {
+    pErr "$(basename $0 
+}
+
+function waitForProcess () {
+    local pid="$0"
+
+    pVerbose "Waiting for $pid"
+}
+
+waitForProcess andres
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -a) echo "-a is set"; shift ;;
+        -b) echo "-b is set"; shift ;;
+        *) echo "Unknown option $1"; printUsage; exit ;;
+    esac
+done
