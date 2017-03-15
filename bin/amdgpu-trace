@@ -61,6 +61,7 @@ pushTrap "rm -rf $TMPDIR"
 
 # parameter defaults
 VERBOSE=0
+EXIT_SIG=2 #SIGINT
 PID="${UNINIT}"
 PID_POLL_PRECISION="0.01"
 TRACE_OUTPUT="amdgpu.trace"
@@ -72,18 +73,20 @@ function printUsage() {
     pErr "Usage: $(basename $0) [options]"
     pErr
     pErr "Options:"
-    pErr "    -p, --pid <pid>       Trace for the lifetime of <pid>"
-    pErr "    -r, --report          Open a report in a text editor (default: ${REPORT_EDITOR})"
-    pErr "        --editor          Select a custom editor for a report"
-    pErr "    -o, --output <path>   Specify output file location"
-    pErr "    -v, --verbose         Verbose Output"
-    pErr "    -h, --help            Print this help menu and exit"
+    pErr "    -p, --wait-for-pid <pid>  Trace for the lifetime of <pid>"
+    pErr "    -s, --wait-for-signal <n> Trace until signal <n> is received (default: ${EXIT_SIG}"
+    pErr "    -r, --report              Open a report in a text editor (default: ${REPORT_EDITOR})"
+    pErr "        --editor              Select a custom editor for a report"
+    pErr "    -o, --output <path>       Specify output file location"
+    pErr "    -v, --verbose             Verbose Output"
+    pErr "    -h, --help                Print this help menu and exit"
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -v|--verbose) VERBOSE=1; shift ;;
-        -p|--pid) PID=$2; shift 2 ;;
+        -p|--wait-for-pid) PID=$2; shift 2 ;;
+        -p|--wait-for-signal) EXIT_SIG=$2; shift 2 ;;
         -o|--output) TRACE_OUTPUT="$1"; shift 2 ;;
         -r|--report) REPORT=1; shift ;;
         --editor) REPORT_EDITOR=$2; shift 2 ;;
@@ -122,10 +125,17 @@ function doReport () {
     $REPORT_EDITOR $TRACE_OUTPUT
 }
 
-startTrace
-waitForProcess $PID
-stopTrace
+function processReport () {
+    stopTrace
 
-if [ "${REPORT}" == "1" ]; then
-    doReport
-fi
+    if [ "${REPORT}" == "1" ]; then
+        doReport
+    fi
+
+    exit
+}
+
+startTrace
+pushTrap "processReport" $EXIT_SIG
+waitForProcess $PID
+processReport
