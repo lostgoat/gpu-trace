@@ -11,7 +11,13 @@ function pVerbose () {
 }
 
 function pErr () {
-    echo -e $@
+    local msg="$@"
+
+    if [ "${GUI}" == "1" ]; then
+        notify-send $(basename $0) "$msg" --icon=dialog-error
+    fi
+
+    echo -e "$msg"
 }
 
 function die () {
@@ -54,6 +60,55 @@ function waitForProcess () {
     pVerbose "Finished waiting for process: $pid"
 }
 
+function runAsRoot() {
+    if [ "${GUI}" == "0" ]; then
+        sudo "$@"
+        return
+    fi
+
+    # Prefer pkexec as it automatically detects CLI fallback
+    if [ -e "$(which pkexec)" ]; then
+        pkexec "$@"
+        return
+    fi
+
+    if [ -e "$(which gksudo)" ]; then
+        gksudo "$@"
+        return
+    fi
+
+    die "No suitable GUI sudo helper found, consider installing pkexec or gksu packages"
+}
+
+function setSuid () {
+    local path="$1"; shift;
+    if [ ! -u "$path" ]; then
+        pVerbose "Setting $path"
+        runAsRoot chmod 4755 "$path"
+    fi
+}
+
+# Avoid cli defaults EDITOR and VISUAL since we might be running
+# in a background process
+function getDefaultReportEditor () {
+    if [ -e "$(which gvim)" ]; then
+        echo gvim
+        return
+    fi
+
+    if [ -e "$(which gedit)" ]; then
+        echo gedit
+        return
+    fi
+
+    if [ -e "$(which kate)" ]; then
+        echo gedit
+        return
+    fi
+
+    pVerbose "Warning: No valid default editor found"
+}
+
 # helper variables
 UNINIT="UNINITMAGIC"
 TMPDIR="$(mktemp -d)"
@@ -66,8 +121,8 @@ PID="${UNINIT}"
 PID_POLL_PRECISION="0.01"
 TRACE_OUTPUT="amdgpu.trace"
 REPORT=0
-REPORT_EDITOR="gvim" # Avoid cli defaults EDITOR and VISUAL since we might be running
-                     # in a background process
+GUI=0
+REPORT_EDITOR="$(getDefaultReportEditor)"
 
 function printUsage() {
     pErr "Usage: $(basename $0) [options]"
@@ -78,6 +133,7 @@ function printUsage() {
     pErr "    -r, --report              Open a report in a text editor (default: ${REPORT_EDITOR})"
     pErr "        --editor              Select a custom editor for a report"
     pErr "    -o, --output <path>       Specify output file location"
+    pErr "    -g, --gui                 Run in a GUI friendly environment"
     pErr "    -v, --verbose             Verbose Output"
     pErr "    -h, --help                Print this help menu and exit"
 }
@@ -88,6 +144,7 @@ while [[ $# -gt 0 ]]; do
         -p|--wait-for-pid) PID=$2; shift 2 ;;
         -p|--wait-for-signal) EXIT_SIG=$2; shift 2 ;;
         -o|--output) TRACE_OUTPUT="$1"; shift 2 ;;
+        -g|--gui) GUI=1; shift ;;
         -r|--report) REPORT=1; shift ;;
         --editor) REPORT_EDITOR=$2; shift 2 ;;
         -h|--help) printUsage; exit ;;
@@ -116,26 +173,41 @@ function stopTrace () {
     fi
 
     pVerbose "Stopping trace with pid: $startTrace__tracePid"
-    sudo kill -2 $startTrace__tracePid
+    kill -2 $startTrace__tracePid
     waitForProcess $startTrace__tracePid
     trace-cmd report -i $startTrace__traceFile > $TRACE_OUTPUT
-}
-
-function doReport () {
-    $REPORT_EDITOR $TRACE_OUTPUT
 }
 
 function processReport () {
     stopTrace
 
+    if [ -x "${REPORT_EDITOR} " ]; then
+        die "Invalid report editor: '${REPORT_EDITOR}'"
+    fi
+
     if [ "${REPORT}" == "1" ]; then
-        doReport
+        ${REPORT_EDITOR} ${TRACE_OUTPUT}
     fi
 
     exit
 }
 
+function setupTraceCmd () {
+    local path="$(which trace-cmd)"
+
+    if [ "${path}" == "" ]; then
+        die "Could not find required application: trace-cmd"
+    fi
+
+    setSuid "$path"
+}
+
+setupTraceCmd
 startTrace
 pushTrap "processReport" $EXIT_SIG
-waitForProcess $PID
-processReport
+if [ "${PID}" != "$UNINIT" ]; then
+    waitForProcess $PID
+    processReport
+else
+    sleep inf
+fi
