@@ -100,7 +100,7 @@ function startTrace () {
         -p function -l "drm_handle_vblank" -l "drm_wait_vblank" \
         -e "amdgpu:amdgpu_vm_flush" -e "amdgpu:amdgpu_cs_ioctl" \
         -e "amdgpu:amdgpu_sched_run_job" -e "drm:drm_vblank_event" \
-        -e "fence:fence_signaled" &
+        -e "*fence:*fence_signaled" &
     startTrace__tracePid=$!
     pushTrap "kill -9 $startTrace__tracePid" # minimal chance of PID collision here
     pVerbose "Starting trace-cmd with pid: $startTrace__tracePid"
