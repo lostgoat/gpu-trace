@@ -117,8 +117,9 @@ pushTrap "rm -rf $TMPDIR"
 # parameter defaults
 VERBOSE=0
 EXIT_SIG=2 #SIGINT
+SNAPSHOT_SIG=5 #SIGTRAP
 PID="${UNINIT}"
-PID_POLL_PRECISION="0.01"
+PID_POLL_PRECISION="0.1"
 TRACE_OUTPUT="amdgpu.trace"
 REPORT=0
 GUI=0
@@ -129,7 +130,8 @@ function printUsage() {
     pErr
     pErr "Options:"
     pErr "    -p, --wait-for-pid <pid>  Trace for the lifetime of <pid>"
-    pErr "    -s, --wait-for-signal <n> Trace until signal <n> is received (default: ${EXIT_SIG}"
+    pErr "    -s, --snapshot-signal <n> Snapshot trace when signal <n> is received (default: ${SNAPSHOT_SIG}"
+    pErr "    -e, --exit-signal <n>     Trace until signal <n> is received (default: ${EXIT_SIG}"
     pErr "    -r, --report              Open a report in a text editor (default: ${REPORT_EDITOR})"
     pErr "        --editor              Select a custom editor for a report"
     pErr "    -o, --output <path>       Specify output file location"
@@ -142,8 +144,9 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -v|--verbose) VERBOSE=1; shift ;;
         -p|--wait-for-pid) PID=$2; shift 2 ;;
-        -p|--wait-for-signal) EXIT_SIG=$2; shift 2 ;;
-        -o|--output) TRACE_OUTPUT="$1"; shift 2 ;;
+        -s|--snapshot-signal) SNAPSHOT_SIG=$2; shift 2 ;;
+        -e|--exit-signal) EXIT_SIG=$2; shift 2 ;;
+        -o|--output) TRACE_OUTPUT="$2"; shift 2 ;;
         -g|--gui) GUI=1; shift ;;
         -r|--report) REPORT=1; shift ;;
         --editor) REPORT_EDITOR=$2; shift 2 ;;
@@ -188,8 +191,6 @@ function processReport () {
     if [ "${REPORT}" == "1" ]; then
         ${REPORT_EDITOR} ${TRACE_OUTPUT}
     fi
-
-    exit
 }
 
 function setupTraceCmd () {
@@ -203,8 +204,10 @@ function setupTraceCmd () {
 }
 
 setupTraceCmd
+pushTrap "processReport; exit" $EXIT_SIG
+pushTrap "processReport; startTrace" $SNAPSHOT_SIG
 startTrace
-pushTrap "processReport" $EXIT_SIG
+
 if [ "${PID}" != "$UNINIT" ]; then
     waitForProcess $PID
     processReport
