@@ -160,9 +160,12 @@ startTrace__traceFile=$UNINIT
 function startTrace () {
     startTrace__traceFile=$TMPDIR/trace-cmd.dat
     trace-cmd record -o $startTrace__traceFile \
-        -p function -l "drm_handle_vblank" -l "drm_wait_vblank" \
-        -e "amdgpu:amdgpu_vm_flush" -e "amdgpu:amdgpu_cs_ioctl" \
-        -e "amdgpu:amdgpu_sched_run_job" -e "drm:drm_vblank_event" \
+        -e "drm:drm_vblank_event"\
+        -e "drm:drm_vblank_event_queued"\
+        -e "drm:drm_vblank_event_delivered" \
+        -e "amdgpu:amdgpu_cs_ioctl" \
+        -e "amdgpu:amdgpu_sched_run_job" \
+        -e "drm:drm_vblank_event" \
         -e "*fence:*fence_signaled" &
     startTrace__tracePid=$!
     pushTrap "kill -9 $startTrace__tracePid" # minimal chance of PID collision here
