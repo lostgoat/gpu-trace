@@ -106,7 +106,16 @@ function getDefaultReportEditor () {
         return
     fi
 
-    pVerbose "Warning: No valid default editor found"
+    pErr "Warning: No valid default report editor found"
+}
+
+function getDefaultReportVisualizer () {
+    if [ -e "$(which gpuvis)" ]; then
+        echo gpuvis
+        return
+    fi
+
+    pErr "Warning: No valid default report visualizer found"
 }
 
 # helper variables
@@ -121,9 +130,12 @@ SNAPSHOT_SIG=5 #SIGTRAP
 PID="${UNINIT}"
 PID_POLL_PRECISION="0.1"
 TRACE_OUTPUT="amdgpu.trace"
+DAT_OUTPUT="trace.dat"
 REPORT=0
+VISUALIZE=0
 GUI=0
 REPORT_EDITOR="$(getDefaultReportEditor)"
+REPORT_GPUVIS="$(getDefaultReportVisualizer)"
 
 function printUsage() {
     pErr "Usage: $(basename $0) [options]"
@@ -133,8 +145,11 @@ function printUsage() {
     pErr "    -s, --snapshot-signal <n> Snapshot trace when signal <n> is received (default: ${SNAPSHOT_SIG}"
     pErr "    -e, --exit-signal <n>     Trace until signal <n> is received (default: ${EXIT_SIG}"
     pErr "    -r, --report              Open a report in a text editor (default: ${REPORT_EDITOR})"
-    pErr "        --editor              Select a custom editor for a report"
+    pErr "        --editor <path>       Select a custom editor for a report"
+    pErr "    -i, --vis                 Open a trace visualizer (default: ${REPORT_GPUVIS})"
+    pErr "        --visualizer <path>   Select a custom trace visualizer"
     pErr "    -o, --output <path>       Specify output file location"
+    pErr "    -d, --trace-dat <path>    Specify output location for dat file"
     pErr "    -g, --gui                 Run in a GUI friendly environment"
     pErr "    -v, --verbose             Verbose Output"
     pErr "    -h, --help                Print this help menu and exit"
@@ -149,7 +164,10 @@ while [[ $# -gt 0 ]]; do
         -o|--output) TRACE_OUTPUT="$2"; shift 2 ;;
         -g|--gui) GUI=1; shift ;;
         -r|--report) REPORT=1; shift ;;
+        -i|--vis) VISUALIZE=1; shift ;;
+        -d|--trace-dat) DAT_OUTPUT=$2; shift 2;;
         --editor) REPORT_EDITOR=$2; shift 2 ;;
+        --visualizer) REPORT_GPUVIS=$2; shift 2 ;;
         -h|--help) printUsage; exit ;;
         *) echo "Unknown option $1"; printUsage; die;;
     esac
@@ -182,17 +200,25 @@ function stopTrace () {
     kill -2 $startTrace__tracePid
     waitForProcess $startTrace__tracePid
     trace-cmd report -i $startTrace__traceFile > $TRACE_OUTPUT
+
+    cp "$startTrace__traceFile" "$DAT_OUTPUT"
 }
 
 function processReport () {
     stopTrace
 
-    if [ -x "${REPORT_EDITOR} " ]; then
-        die "Invalid report editor: '${REPORT_EDITOR}'"
+    if [ "${VISUALIZE}" == "1" ]; then
+        if [ -x "${REPORT_GPUVIS} " ]; then
+            die "Invalid report editor: '${REPORT_EDITOR}'"
+        fi
+        ${REPORT_GPUVIS} ${DAT_OUTPUT} &
     fi
 
     if [ "${REPORT}" == "1" ]; then
-        ${REPORT_EDITOR} ${TRACE_OUTPUT}
+        if [ -x "${REPORT_EDITOR} " ]; then
+            die "Invalid report editor: '${REPORT_EDITOR}'"
+        fi
+        ${REPORT_EDITOR} ${TRACE_OUTPUT} &
     fi
 }
 
