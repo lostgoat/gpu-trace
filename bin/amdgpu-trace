@@ -177,15 +177,46 @@ startTrace__tracePid=$UNINIT
 startTrace__traceFile=$UNINIT
 function startTrace () {
     startTrace__traceFile=$TMPDIR/trace-cmd.dat
+
+    local traceEvents=""
+
+    # https://github.com/mikesart/gpuvis/wiki/TechDocs-Linux-Scheduler
+    traceEvents+=" -e sched:sched_switch"
+    traceEvents+=" -e sched:sched_process_fork"
+    traceEvents+=" -e sched:sched_process_exec"
+    traceEvents+=" -e sched:sched_process_exit"
+
+    traceEvents+=" -e drm:drm_vblank_event"
+    traceEvents+=" -e drm:drm_vblank_event_queued"
+    traceEvents+=" -e drm:drm_vblank_event_delivered"
+
+    # https://github.com/mikesart/gpuvis/wiki/TechDocs-AMDGpu
+    traceEvents+=" -e amdgpu:amdgpu_vm_flush"
+    traceEvents+=" -e amdgpu:amdgpu_cs_ioctl"
+    traceEvents+=" -e amdgpu:amdgpu_sched_run_job"
+    traceEvents+=" -e amdgpu:amdgpu_ttm_bo_move"
+    traceEvents+=" -e *fence:*fence_signaled"
+
+    # https://github.com/mikesart/gpuvis/wiki/TechDocs-Intel
+    #
+    # NOTE: the i915_gem_request_submit, i915_gem_request_in, i915_gem_request_out
+    # tracepoints require the CONFIG_DRM_I915_LOW_LEVEL_TRACEPOINTS Kconfig option to
+    # be enabled.
+    traceEvents+=" -e i915:i915_flip_request"
+    traceEvents+=" -e i915:i915_flip_complete"
+    traceEvents+=" -e i915:intel_gpu_freq_change"
+    traceEvents+=" -e i915:i915_gem_request_add"
+    traceEvents+=" -e i915:i915_gem_request_submit"
+    traceEvents+=" -e i915:i915_gem_request_in"
+    traceEvents+=" -e i915:i915_gem_request_out"
+    traceEvents+=" -e i915:intel_engine_notify"
+    traceEvents+=" -e i915:i915_gem_request_wait_begin"
+    traceEvents+=" -e i915:i915_gem_request_wait_end"
+
     trace-cmd record -o $startTrace__traceFile \
-        -e "drm:drm_vblank_event"\
-        -e "drm:drm_vblank_event_queued"\
-        -e "drm:drm_vblank_event_delivered" \
-        -e "amdgpu:amdgpu_cs_ioctl" \
-        -e "amdgpu:amdgpu_sched_run_job" \
-        -e "drm:drm_vblank_event" \
-        -e "*fence:*fence_signaled" &
+	    $traceEvents &
     startTrace__tracePid=$!
+
     pushTrap "kill -9 $startTrace__tracePid" # minimal chance of PID collision here
     pVerbose "Starting trace-cmd with pid: $startTrace__tracePid"
 }
