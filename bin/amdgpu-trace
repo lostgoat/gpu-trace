@@ -83,7 +83,7 @@ function runAsRoot() {
 function setSuid () {
     local path="$1"; shift;
     if [ ! -u "$path" ]; then
-        pVerbose "Setting $path"
+        pVerbose "Setting $path as suid"
         runAsRoot chmod 4755 "$path"
     fi
 }
@@ -134,8 +134,10 @@ DAT_OUTPUT="trace.dat"
 REPORT=0
 VISUALIZE=0
 GUI=0
+TRACE_CMD="$(which trace-cmd)"
 REPORT_EDITOR="$(getDefaultReportEditor)"
 REPORT_GPUVIS="$(getDefaultReportVisualizer)"
+TRACEFS_ROOT=""
 
 function printUsage() {
     pErr "Usage: $(basename $0) [options]"
@@ -173,12 +175,11 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-startTrace__tracePid=$UNINIT
-startTrace__traceFile=$UNINIT
 function startTrace () {
-    startTrace__traceFile=$TMPDIR/trace-cmd.dat
 
     local traceEvents=""
+
+    pVerbose "Starting trace"
 
     # https://github.com/mikesart/gpuvis/wiki/TechDocs-Linux-Scheduler
     traceEvents+=" -e sched:sched_switch"
@@ -213,26 +214,36 @@ function startTrace () {
     traceEvents+=" -e i915:i915_gem_request_wait_begin"
     traceEvents+=" -e i915:i915_gem_request_wait_end"
 
-    trace-cmd record -o $startTrace__traceFile \
-	    $traceEvents &
-    startTrace__tracePid=$!
+    ${TRACE_CMD} reset
+    ${TRACE_CMD} start -b 8000 -D -i ${traceEvents}
 
-    pushTrap "kill -9 $startTrace__tracePid" # minimal chance of PID collision here
-    pVerbose "Starting trace-cmd with pid: $startTrace__tracePid"
+    echo "Capture started"
 }
 
 function stopTrace () {
-    if [ "${startTrace__tracePid}" == "$UNINIT" \
-        -o "${startTrace__traceFile}" == "$UNINIT" ]; then
-        die "stopTrace called with no trace started"
+    local tracingOn="$(cat ${TRACEFS_ROOT}/tracing_on)"
+
+    if [ "${tracingOn}" != "1" ]; then
+        return
     fi
 
-    pVerbose "Stopping trace with pid: $startTrace__tracePid"
-    kill -2 $startTrace__tracePid
-    waitForProcess $startTrace__tracePid
-    trace-cmd report -i $startTrace__traceFile > $TRACE_OUTPUT
+    pVerbose "Stopping trace"
 
-    cp "$startTrace__traceFile" "$DAT_OUTPUT"
+    ${TRACE_CMD} reset
+    ${TRACE_CMD} snapshot -f
+}
+
+function captureTrace () {
+    pVerbose "Capturing trace"
+
+    ${TRACE_CMD} stop
+    ${TRACE_CMD} extract -k -o ${TRACE_OUTPUT}
+    ${TRACE_CMD} restart
+}
+
+function reportTrace () {
+    pVerbose "Reporting trace"
+    ${GPUVIS_CMD} ${TRACE_OUTPUT} &
 }
 
 function processReport () {
@@ -254,22 +265,27 @@ function processReport () {
 }
 
 function setupTraceCmd () {
-    local path="$(which trace-cmd)"
+    local path="${TRACE_CMD}"
 
     if [ "${path}" == "" ]; then
         die "Could not find required application: trace-cmd"
     fi
 
+    # Invoking trace-cmd will mount tracefs if not mounted
+    ${TRACE_CMD} stat > /dev/null
+    TRACEFS_ROOT=$(mount | grep tracefs | head -1 | awk '{ print $3 }')
+
     setSuid "$path"
 }
 
 setupTraceCmd
-pushTrap "processReport; exit" $EXIT_SIG
-pushTrap "processReport; startTrace" $SNAPSHOT_SIG
+pushTrap "captureTrace; processReport; exit" $EXIT_SIG
+pushTrap "captureTrace; processReport" $SNAPSHOT_SIG
 startTrace
 
 if [ "${PID}" != "$UNINIT" ]; then
     waitForProcess $PID
+    captureTrace
     processReport
 else
     sleep inf
