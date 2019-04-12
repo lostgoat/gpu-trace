@@ -7,14 +7,10 @@ We recommend using gpuvis for visualizing amdgpu trace files. Clone, build and
 install this repository:
 https://github.com/mikesart/gpuvis
 
-Recommended usage:
-```
-amdgpu-trace -d trace.dat && gpuvis trace.dat
-```
-
-Lazy usage:
+Usage:
 ```
 amdgpu-trace --vis
+(press Ctrl+C to stop trace)
 ```
 
 Text report (no gpuvis installed):
