@@ -85,6 +85,7 @@ function setSuid () {
     if [ ! -u "$path" ]; then
         pVerbose "Setting $path as suid"
         runAsRoot chmod 4755 "$path"
+        runAsRoot chown root:root "$path"
     fi
 }
 
@@ -129,10 +130,10 @@ EXIT_SIG=2 #SIGINT
 SNAPSHOT_SIG=5 #SIGTRAP
 PID="${UNINIT}"
 PID_POLL_PRECISION="0.1"
-TRACE_OUTPUT="amdgpu.trace"
+TRACE_OUTPUT="amdgpu-trace.dat"
 DAT_OUTPUT="trace.dat"
 REPORT=0
-VISUALIZE=0
+VISUALIZE=1
 GUI=0
 TRACE_CMD="$(which trace-cmd)"
 REPORT_EDITOR="$(getDefaultReportEditor)"
@@ -253,14 +254,14 @@ function processReport () {
         if [ -x "${REPORT_GPUVIS} " ]; then
             die "Invalid report editor: '${REPORT_EDITOR}'"
         fi
-        ${REPORT_GPUVIS} ${DAT_OUTPUT} &
+        ${REPORT_GPUVIS} ${TRACE_OUTPUT} &
     fi
 
     if [ "${REPORT}" == "1" ]; then
         if [ -x "${REPORT_EDITOR} " ]; then
             die "Invalid report editor: '${REPORT_EDITOR}'"
         fi
-        ${REPORT_EDITOR} ${TRACE_OUTPUT} &
+        ${REPORT_EDITOR} ${DAT_OUTPUT} &
     fi
 }
 
@@ -271,11 +272,11 @@ function setupTraceCmd () {
         die "Could not find required application: trace-cmd"
     fi
 
+    setSuid "$path"
+
     # Invoking trace-cmd will mount tracefs if not mounted
     ${TRACE_CMD} stat > /dev/null
     TRACEFS_ROOT=$(mount | grep tracefs | head -1 | awk '{ print $3 }')
-
-    setSuid "$path"
 }
 
 setupTraceCmd
