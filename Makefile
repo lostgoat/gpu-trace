@@ -1,6 +1,7 @@
+INSTALL_PATH?=/usr/local
+
 all:
 	@echo "Run script locally bin/amdgpu-trace.sh or 'make install'"
 
 install:
-	cp bin/amdgpu-trace /usr/local/bin/amdgpu-trace
-	chmod 0755 /usr/local/bin/amdgpu-trace
+	install -m 644 bin/amdgpu-trace $(INSTALL_PATH)/bin/amdgpu-trace

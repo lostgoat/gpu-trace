@@ -176,11 +176,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+startTrace_TraceStarted="0"
 function startTrace () {
 
     local traceEvents=""
 
-    pVerbose "Starting trace"
+    echo "Starting trace, please wait..."
 
     # https://github.com/mikesart/gpuvis/wiki/TechDocs-Linux-Scheduler
     traceEvents+=" -e sched:sched_switch"
@@ -218,6 +219,7 @@ function startTrace () {
     ${TRACE_CMD} reset
     ${TRACE_CMD} start -b 8000 -D -i ${traceEvents}
 
+    startTrace_TraceStarted="1"
     echo "Capture started"
 }
 
@@ -238,6 +240,11 @@ function captureTrace () {
     pVerbose "Capturing trace"
 
     ${TRACE_CMD} stop
+
+    if [ "${startTrace_TraceStarted}" != "1" ]; then
+        die "FATAL: trace interrupted before capture started"
+    fi
+
     ${TRACE_CMD} extract -k -o ${TRACE_OUTPUT}
     ${TRACE_CMD} restart
 }
