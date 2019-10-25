@@ -1,0 +1,9 @@
+[Unit]
+Description=GPU performance capture daemon
+
+[Service]
+ExecStart=##INSTALL_PREFIX##/bin/gpu-trace --daemon
+ExecStop=##INSTALL_PREFIX##/bin/gpu-trace --stop
+
+[Install]
+WantedBy=multi-user.target
