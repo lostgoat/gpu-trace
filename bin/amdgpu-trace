@@ -216,7 +216,7 @@ function startTrace () {
     traceEvents+=" -e i915:i915_gem_request_wait_begin"
     traceEvents+=" -e i915:i915_gem_request_wait_end"
 
-    ${TRACE_CMD} reset
+    #${TRACE_CMD} reset
     ${TRACE_CMD} start -b 8000 -D -i ${traceEvents}
 
     startTrace_TraceStarted="1"
