@@ -31,6 +31,10 @@ import subprocess
 import shutil
 import signal
 import threading
+import _thread
+import atexit
+from xmlrpc.server import SimpleXMLRPCServer
+import xmlrpc.client
 
 class State(object):
 	# Singleton boilerplate
@@ -42,6 +46,8 @@ class State(object):
 
 	#Members
 	traceExitEvent = threading.Event();
+	daemon = None;
+	rpcServerPort = 47317;
 
 ####################################
 # Helpers
@@ -84,16 +90,31 @@ def GetBinary( name ):
 	Log.debug( f"Found {name} at {path}" );
 	return path
 
-def RunCommand( cmd ):
+def RunCommand( cmd, background=False ):
 	execCmd = cmd;
-	cmdProc = subprocess.run( execCmd, capture_output=True );
-	Log.debug( f"Executed {execCmd}" );
-	Log.debug( f"return: {cmdProc.returncode}" );
-	Log.debug( f"stdout: {cmdProc.stdout}" );
-	Log.debug( f"stderr: {cmdProc.stderr}" );
 
-	cmdProc.check_returncode();
-	return str( cmdProc.stdout, 'utf-8' );
+	# Log.debug( f"Executing {execCmd}" );
+	if background:
+		subprocess.Popen( cmd );
+		return "";
+	else:
+		cmdProc = subprocess.run( execCmd, capture_output=True );
+		# Log.debug( f"return: {cmdProc.returncode}" );
+		# Log.debug( f"stdout: {cmdProc.stdout}" );
+		# Log.debug( f"stderr: {cmdProc.stderr}" );
+
+		cmdProc.check_returncode();
+		return str( cmdProc.stdout, 'utf-8' );
+
+def IsFdValid( fd ):
+	if fd < 0:
+		return False;
+
+	try:
+		os.fstat( fd );
+		return True;
+	except:
+		return False;
 
 ####################################
 # Managing trace-cmd
@@ -101,6 +122,8 @@ def RunCommand( cmd ):
 class GpuTrace:
 	def __init__( self ):
 		self.traceCmd = GetBinary( 'trace-cmd' );
+		self.captureMask = 0o666;
+		self.traceCapable = False;
 
 		# A bit of sanity checking
 		self.EnsureTraceCmdCapable();
@@ -111,11 +134,14 @@ class GpuTrace:
 			self.traceEventArgs.append( f"{event}" );
 
 	def __del__( self ):
-		self.StopCapture();
+		if self.traceCapable:
+			if self.IsTraceEnabled():
+				self.StopCapture();
 
 	def EnsureTraceCmdCapable( self ):
 		try:
 			self.TraceCmd( "stat" );
+			self.traceCapable=True;
 		except Exception as e:
 			Die( "Failed run trace-cmd, are you root?", e );
 
@@ -148,6 +174,7 @@ class GpuTrace:
 		Log.info( f"GPU Trace capture requested: {path}" );
 		self.TraceCmd( "stop" );
 		self.TraceCmd( "extract", "-k", "-o", path );
+		os.chmod( path, self.captureMask );
 
 		Log.debug( "GPU Trace capture resuming" );
 		self.TraceCmd( "restart" );
@@ -208,6 +235,8 @@ class GpuTrace:
 ####################################
 def SigIntHandler( sig, frame ):
 	State().traceExitEvent.set();
+	if State().daemon is not None:
+		State().daemon.Shutdown();
 
 def RegisterSignalHandlers():
 	signal.signal( signal.SIGINT, SigIntHandler )
@@ -218,26 +247,94 @@ def RegisterSignalHandlers():
 class GpuVis:
 	def __init__( self ):
 		self.gpuvis = GetBinary( 'gpuvis' );
+		self.user = RunCommand( 'logname' ).strip();
 
 	def OpenTrace( self, path ):
-		return RunCommand( [ self.gpuvis, path ]  );
+		RunCommand( [ "sudo", "-u", self.user, self.gpuvis, path ], True  );
 
 ####################################
 # Daemon
 ####################################
-def DaemonMain( args ):
-	Log.info( 'GPU trace daemon starting' );
+class Daemon:
+	def __init__( self, args ):
+		State().daemon = self;
 
-	gpuTrace = GpuTrace();
-	gpuTrace.StartCapture();
+		self.args = args;
+		self.server = None;
+		self.gpuTrace = GpuTrace();
 
-	State().traceExitEvent.wait();
+		self.RpcServerSetup();
+		self.gpuTrace.StartCapture();
+
+	def Run( self ):
+		Log.info( 'GPU Trace daemon ready' );
+		self.server.serve_forever();
+		Log.info( 'GPU Trace daemon exiting' );
+
+	def ShutdownWork( server ):
+		if server is not None:
+			Log.info( "Shutting down rpc server" );
+			server.shutdown();
+
+	def Shutdown( self ):
+		Log.info( "Daemon shutdown request received" );
+		_thread.start_new_thread( Daemon.ShutdownWork, (self.server,) );
+		self.gpuTrace.StopCapture();
+
+	def RpcCapture( self, path ):
+		Log.info( f"Executing capture command: {path}" );
+		self.gpuTrace.CaptureTrace( path.strip() );
+		return True
+
+	def RpcStart( self ):
+		Log.info( f"Executing start command" );
+		self.gpuTrace.StartCapture();
+		return True
+
+	def RpcStop( self ):
+		Log.info( f"Executing stop command" );
+		self.gpuTrace.StopCapture();
+		return True
+
+	def RpcExit( self ):
+		Log.info( f"Executing exit command" );
+		self.Shutdown();
+		return True
+
+	def RpcServerSetup( self ):
+		self.server = SimpleXMLRPCServer( ("localhost", State().rpcServerPort ) );
+
+		self.server.register_function( self.RpcCapture, "capture");
+		self.server.register_function( self.RpcStart, "start");
+		self.server.register_function( self.RpcStop, "stop");
+		self.server.register_function( self.RpcExit, "exit");
 
 ####################################
 # Daemon client
 ####################################
 def ClientMain( args ):
 	Log.debug( 'GPU trace client main' );
+	rpcServerUrl = f"http://localhost:{State().rpcServerPort}/";
+
+	with xmlrpc.client.ServerProxy( rpcServerUrl ) as rpcServer:
+		if args.command_capture:
+			Log.info( f"Requesting capture to {args.output_dat} ..." );
+			rpcServer.capture( args.output_dat );
+
+			if args.open_gpuvis:
+				GpuVis().OpenTrace( args.output_dat );
+
+		if args.command_exit:
+			Log.info( 'Requesting exit...' );
+			rpcServer.exit();
+
+		if args.command_start:
+			Log.info( 'Requesting start...' );
+			rpcServer.start();
+
+		if args.command_stop:
+			Log.info( 'Requesting stop...' );
+			rpcServer.stop();
 
 ####################################
 # Standalone
@@ -266,9 +363,18 @@ def Main():
 	parser.add_argument( '-v', '--verbose', action="store_true", default=False, help="Enable verbose output" )
 	parser.add_argument( '-l', '--logfile', default="", help="Log all messages to this file" )
 	parser.add_argument( '-o', '--output-dat', dest="output_dat", default="gputrace.dat", help="Trace output filename" )
-	parser.add_argument( '-c', '--command', default="", help="Send COMMAND to daemon" )
+	parser.add_argument( '--no-gpuvis', action="store_false", dest="open_gpuvis", default=True, help="Don't open gpuvis when a capture is taken" )
+
+	# Rpc commands
+	parser.add_argument( '--capture', action="store_true", dest="command_capture", default=False, help="Send a capture request to the Daemon. See OUTPUT_DAT for path." )
+	parser.add_argument( '--exit', action="store_true", dest="command_exit", default=False, help="Send an exit command to the Daemon." )
+	parser.add_argument( '--start', action="store_true", dest="command_start", default=False, help="Send an start command to the Daemon." )
+	parser.add_argument( '--stop', action="store_true", dest="command_stop", default=False, help="Send a stop command to the Daemon." )
 
 	args = parser.parse_args()
+
+	# Store the path arguments as full paths
+	args.output_dat = os.path.realpath( args.output_dat );
 
 	try:
 		logLevel = logging.DEBUG if args.verbose else logging.INFO
@@ -279,16 +385,15 @@ def Main():
 	except Exception as e:
 		Die( "Failed to setup logging", e );
 
-	Log.info( f"Event: {State().traceExitEvent.is_set()}" );
 	Log.debug( f"Daemon mode: {args.daemon}" );
 	Log.debug( f"Verbose output: {args.verbose}" );
 	Log.debug( f"Logfile: {args.logfile}" );
 	Log.debug( f"Output dat: {args.output_dat}" );
-	Log.debug( f"Client command: {args.command}" );
 
 	if args.daemon:
-		DaemonMain( args )
-	elif args.command.strip():
+		daemon = Daemon( args );
+		daemon.Run();
+	elif args.command_capture or args.command_exit or args.command_start or args.command_stop:
 		ClientMain( args )
 	else:
 		StandaloneMain( args )
