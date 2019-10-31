@@ -1,6 +1,7 @@
 # Configuration for packagers
 INSTALL_ROOT?=
 INSTALL_PREFIX?=/usr/local
+SYSTEMD_SERVICE_PATH?=/usr/lib/systemd
 
 # Packaging scripts should not set this variable.
 # Maintainers should move towards the configuration
@@ -9,7 +10,6 @@ INSTALL_PREFIX?=/usr/local
 INSTALL_PATH?=${INSTALL_ROOT}${INSTALL_PREFIX}
 
 # Local settings
-SYSTEMD_SERVICE_PATH?=/usr/lib/systemd
 SYSTEMD_SERVICE_NAME=gpu-trace.service
 SYSTEMD_SERVICE_IN=${SYSTEMD_SERVICE_NAME}.in
 SYSTEMD_SERVICE_PROCESSED:=$(shell mktemp ${SYSTEMD_SERVICE_NAME}.XXXXXX)
