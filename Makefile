@@ -18,7 +18,7 @@ all:
 	@echo "Run script locally bin/gpu-trace or 'make install'"
 
 install:
-	install -m 755 bin/gpu-trace $(INSTALL_PATH)/bin/gpu-trace
+	install -m 755 bin/gpu-trace.py $(INSTALL_PATH)/bin/gpu-trace
 	@sed "s|##INSTALL_PREFIX##|${INSTALL_PREFIX}|" ${SYSTEMD_SERVICE_IN} > ${SYSTEMD_SERVICE_PROCESSED}
 	install -D -m644 ${SYSTEMD_SERVICE_PROCESSED} ${SYSTEMD_SERVICE_PATH}/system/${SYSTEMD_SERVICE_NAME}
 	@rm -f ${SYSTEMD_SERVICE_PROCESSED}
