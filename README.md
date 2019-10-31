@@ -1,24 +1,42 @@
-# amdgpu-trace
+# gpu-trace
 
-Helper script to simplify trace collection for amdgpu and integration with
-reporting tools.
+A tool intended to aid the collection process of gpuvis traces.
 
-We recommend using gpuvis for visualizing amdgpu trace files. Clone, build and
-install this repository:
-https://github.com/mikesart/gpuvis
+It can run either as a daemon or standalone fashion.
 
-Usage:
+## Installation instructions
+
 ```
-amdgpu-trace --vis
-(press Ctrl+C to stop trace)
+cd {path where project was clone}
+sudo make install
 ```
 
-Text report (no gpuvis installed):
+## Standalone capture
+
 ```
-amdgpu-trace -r
+sudo gpu-trace
+# Press Ctrl+C to stop capture and open report in gpuvis
 ```
 
-For more options see:
+## Daemon based capture
+
+First enable the daemon after installation:
 ```
-amdgpu-trace --help
+sudo systemctl enable gpu-trace
+sudo systemctl start gpu-trace
 ```
+
+Capturing a trace:
+```
+gpu-trace --capture
+# Or gpu-trace --capture -o ./capture.dat
+```
+
+In daemon mode a trace will always be collected in the background. To temporarily disable capture:
+```
+gpu-trace --stop
+# Do things
+gpu-trace --start
+```
+
+Alternatively, the daemon can stopped/started using systemctl.
