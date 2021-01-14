@@ -193,7 +193,7 @@ class GpuTrace:
     def CaptureTrace(self, path):
         if not self.IsTraceEnabled():
             Log.error("Attempted to capture trace, but no trace was enabled")
-            return
+            return False
 
         Log.info(f"GPU Trace capture requested: {path}")
         self.TraceCmd("stop")
@@ -202,6 +202,7 @@ class GpuTrace:
 
         Log.debug("GPU Trace capture resuming")
         self.TraceCmd("restart")
+        return True
 
     def TraceCmd(self, *args):
         procArgs = [self.traceCmd]
@@ -287,9 +288,11 @@ class Daemon:
         self.args = args
         self.server = None
         self.gpuTrace = GpuTrace()
+        self.capturing = False
 
         self.RpcServerSetup()
         self.gpuTrace.StartCapture()
+        self.capturing = True
 
     def Run(self):
         Log.info('GPU Trace daemon ready')
@@ -305,20 +308,30 @@ class Daemon:
         Log.info("Daemon shutdown request received")
         _thread.start_new_thread(Daemon.ShutdownWork, (self.server,))
         self.gpuTrace.StopCapture()
+        sys.exit()
 
     def RpcCapture(self, path):
         Log.info(f"Executing capture command: {path}")
-        self.gpuTrace.CaptureTrace(path.strip())
-        return True
+        return self.gpuTrace.CaptureTrace(path.strip())
 
     def RpcStart(self):
         Log.info(f"Executing start command")
+
+        if self.capturing:
+            return True
+
         self.gpuTrace.StartCapture()
+        self.capturing = True
         return True
 
     def RpcStop(self):
         Log.info(f"Executing stop command")
+
+        if not self.capturing:
+            return True
+
         self.gpuTrace.StopCapture()
+        self.capturing = False
         return True
 
     def RpcExit(self):
@@ -344,10 +357,15 @@ def ClientMain(args):
     with xmlrpc.client.ServerProxy(rpcServerUrl) as rpcServer:
         if args.command_capture:
             Log.info(f"Requesting capture to {args.output_dat} ...")
-            rpcServer.capture(args.output_dat)
+            ret = rpcServer.capture(args.output_dat)
+
+            if not ret:
+                Log.info("Capture request failed")
+                return False
 
             if args.open_gpuvis:
                 GpuVis().OpenTrace(args.output_dat)
+            return True
 
         if args.command_exit:
             Log.info('Requesting exit...')
