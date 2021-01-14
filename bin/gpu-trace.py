@@ -24,6 +24,7 @@
 
 import os
 import sys
+import stat
 import time
 import logging
 import argparse
@@ -125,6 +126,10 @@ def IsFdValid(fd):
     except:
         return False
 
+def AddPermissions(path, mask):
+    current = os.stat(path).st_mode
+    os.chmod(path, current | mask)
+
 ####################################
 # Managing trace-cmd
 ####################################
@@ -137,6 +142,8 @@ class GpuTrace:
         # A bit of sanity checking
         self.EnsureTraceCmdCapable()
 
+        self.TraceSetup()
+
         self.traceEventArgs = []
         for event in GpuTrace.traceEvents:
             self.traceEventArgs.append("-e")
@@ -146,6 +153,14 @@ class GpuTrace:
         if self.traceCapable:
             if self.IsTraceEnabled():
                 self.StopCapture()
+
+    def TraceSetup(self):
+        try:
+            Log.info(f"One time setup")
+            AddPermissions("/sys/kernel/tracing/", stat.S_IXOTH)
+            AddPermissions("/sys/kernel/tracing/trace_marker", stat.S_IWOTH)
+        except Exception as e:
+            Die('Failed one time setup', e)
 
     def EnsureTraceCmdCapable(self):
         try:
