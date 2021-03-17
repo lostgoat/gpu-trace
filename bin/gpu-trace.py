@@ -36,8 +36,50 @@ import _thread
 import atexit
 from xmlrpc.server import SimpleXMLRPCServer
 import xmlrpc.client
+import json
 
 
+####################################
+# Config
+####################################
+class Config:
+    def __init__(self):
+        self.jsonData = {}
+        self.LoadConfig()
+
+    def GetConfigDir(self):
+        fallbackDir = os.path.join(os.getenv('HOME'), '.config')
+        configRoot = os.path.realpath(os.getenv('XDG_CONFIG_HOME', fallbackDir))
+        return os.path.join(configRoot, 'gpu-trace')
+
+    def GetConfigFile(self):
+        return os.path.join(self.GetConfigDir(), 'config.json')
+
+    def LoadConfig(self):
+        try:
+            with open(self.GetConfigFile(), 'r') as f:
+                self.jsonData = json.load(f)
+        except:
+            self.jsonData = {}
+
+    def SaveConfig(self):
+        os.makedirs(self.GetConfigDir(), exist_ok=True)
+        with open(self.GetConfigFile(), 'w') as f:
+            json.dump(self.jsonData, f, indent=4)
+
+    def GetConfigValue(self, key, default):
+        if self.jsonData and key in self.jsonData:
+            return self.jsonData[key]
+        return default
+
+    def SetConfigValue(self, key, val):
+        self.jsonData[key] = val
+        self.SaveConfig()
+
+
+####################################
+# State singleton
+####################################
 class State(object):
     # Singleton boilerplate
     _instance = None
@@ -50,6 +92,7 @@ class State(object):
     # Members
     traceExitEvent = threading.Event()
     daemon = None
+    config = Config()
     rpcServerPort = 47317
 
 ####################################
@@ -128,7 +171,8 @@ def IsFdValid(fd):
 
 def AddPermissions(path, mask):
     current = os.stat(path).st_mode
-    os.chmod(path, current | mask)
+    if not current & mask:
+        os.chmod(path, current | mask)
 
 ####################################
 # Managing trace-cmd
@@ -291,8 +335,12 @@ class Daemon:
         self.capturing = False
 
         self.RpcServerSetup()
-        self.gpuTrace.StartCapture()
-        self.capturing = True
+        
+        if State.config.GetConfigValue('StartupCapture', False):
+            self.gpuTrace.StartCapture()
+            self.capturing = True
+        else:
+            Log.info('Startup tracing is disabled')
 
     def Run(self):
         Log.info('GPU Trace daemon ready')
@@ -339,6 +387,10 @@ class Daemon:
         self.Shutdown()
         return True
 
+    def RpcGetTracingStatus(self):
+        Log.info(f"Executing get tracing status command")
+        return self.capturing
+
     def RpcServerSetup(self):
         self.server = SimpleXMLRPCServer(("localhost", State().rpcServerPort))
 
@@ -346,6 +398,7 @@ class Daemon:
         self.server.register_function(self.RpcStart, "start")
         self.server.register_function(self.RpcStop, "stop")
         self.server.register_function(self.RpcExit, "exit")
+        self.server.register_function(self.RpcGetTracingStatus, "getTracingStatus")
 
 ####################################
 # Daemon client
@@ -378,6 +431,10 @@ def ClientMain(args):
         if args.command_stop:
             Log.info('Requesting stop...')
             rpcServer.stop()
+
+        if args.command_get_tracing_status:
+            print( "1" if rpcServer.getTracingStatus() else "0" )
+            
 
 ####################################
 # Standalone
@@ -413,6 +470,12 @@ def Main():
     parser.add_argument('--no-gpuvis', action="store_false", dest="open_gpuvis",
                         default=True, help="Don't open gpuvis when a capture is taken")
 
+    # Config commands
+    parser.add_argument('--enable-startup-tracing', action=argparse.BooleanOptionalAction,
+                        help="Enable/disable tracing on service startup")
+    parser.add_argument('--get-startup-tracing', action="store_true",
+                        help="Check if the the service will start tracing on startup")
+
     # Rpc commands
     parser.add_argument('--capture', action="store_true", dest="command_capture",
                         default=False, help="Send a capture request to the Daemon. See OUTPUT_DAT for path.")
@@ -422,6 +485,8 @@ def Main():
                         default=False, help="Send an start command to the Daemon.")
     parser.add_argument('--stop', action="store_true", dest="command_stop",
                         default=False, help="Send a stop command to the Daemon.")
+    parser.add_argument('--get-tracing-status', action="store_true", dest="command_get_tracing_status",
+                        default=False, help="Query if the daemon is currently tracing or not")
 
     args = parser.parse_args()
 
@@ -445,8 +510,12 @@ def Main():
     if args.daemon:
         daemon = Daemon(args)
         daemon.Run()
-    elif args.command_capture or args.command_exit or args.command_start or args.command_stop:
+    elif args.command_capture or args.command_exit or args.command_start or args.command_stop or args.command_get_tracing_status:
         ClientMain(args)
+    elif args.enable_startup_tracing is not None:
+        State().config.SetConfigValue("StartupCapture", args.enable_startup_tracing)
+    elif args.get_startup_tracing is not None:
+        print( "1" if State().config.GetConfigValue("StartupCapture", None) else "0" )
     else:
         StandaloneMain(args)
 
