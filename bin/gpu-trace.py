@@ -493,12 +493,18 @@ def Main():
     # Store the path arguments as full paths
     args.output_dat = os.path.realpath(args.output_dat)
 
+    if not args.logfile:
+        if args.daemon:
+            args.logfile = '/var/log/gpu-trace-daemon.log'
+        else:
+            args.logfile = 'gpu-trace.log'
+
     try:
         logLevel = logging.DEBUG if args.verbose else logging.INFO
         if args.daemon:
             logLevel = logging.DEBUG
 
-        SetupLogging('amdgpu-trace.log', logLevel)
+        SetupLogging(args.logfile, logLevel)
     except Exception as e:
         Die("Failed to setup logging", e)
 
