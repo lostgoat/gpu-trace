@@ -23,6 +23,7 @@
 # SOFTWARE.
 
 import os
+import os.path
 import sys
 import stat
 import time
@@ -37,6 +38,9 @@ import atexit
 from xmlrpc.server import SimpleXMLRPCServer
 import xmlrpc.client
 import json
+import random
+import string
+import glob
 
 
 ####################################
@@ -148,7 +152,8 @@ def RunCommand(cmd, background=False):
     # Log.debug( f"Executing {execCmd}" );
     if background:
         return subprocess.Popen(
-            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
     else:
         cmdProc = subprocess.run(execCmd, capture_output=True)
         # Log.debug( f"return: {cmdProc.returncode}" );
@@ -301,6 +306,198 @@ class GpuTrace:
         "i915:i915_gem_request_wait_begin",
         "i915:i915_gem_request_wait_end",
     ]
+
+####################################
+# Managing perf
+####################################
+class PerfTrace:
+    class PerfDaemon:
+        def __init__(self, proc, filename):
+            self.proc = proc
+            self.filename = filename
+
+        def __del__(self):
+            if self.IsRunning():
+                self.Terminate()
+
+        def IsRunning(self):
+            return self.proc.poll() is None
+
+        def Terminate(self):
+            self.proc.terminate()
+            self.proc.wait()
+
+        def RequestCapture(self):
+            self.proc.send_signal(signal.SIGUSR2)
+
+        def TraceFile(self):
+            r = glob.glob(f"{self.filename}.*")
+            return r[0] if len(r) > 0 else None
+
+        def WaitTraceFile(self, delay_ms):
+            # Implicitly rounds any nonzero value up to the next
+            # greatest multiple of 500ms.
+
+            delay_s = delay_ms * 0.001
+
+            while self.TraceFile() is None and delay_s > 0:
+                time.sleep(0.5)
+                delay_s -= 0.5
+
+            return self.TraceFile()
+
+    def __init__(self):
+        self.perfCmd = GetBinary('perf')
+        self.captureMask = 0o666
+        self.perfCapable = False
+        self.perfDaemon = None
+
+        # Ensure that an appropriate version of perf is available
+        # and that we can run a perf trace.
+        self.EnsurePerfCapable()
+
+    def __del__(self):
+        if self.perfCapable:
+            if self.IsRecordEnabled():
+                self.StopRecord(quiet=True)
+
+    def EnsurePerfCapable(self):
+        try:
+            res = subprocess.run(
+                [self.perfCmd, "data", "convert", "--help"],
+                capture_output=True)
+            if res.stderr.find(b"--to-json") < 0:
+                Die("No perf data convert --to-json support")
+        except Exception as e:
+            Die("Failed run perf. Is it installed?", e)
+
+        try:
+            # This will take some time, but it shouldn't be longer than
+            # a second or two.
+            self.PerfCmd("record", "-Fmax", "-o/dev/null", "--", "echo")
+            self.perfCapable = True
+        except Exception as e:
+            Die("Failed run perf record, are you root?", e)
+
+    def StartRecord(self, restart=False):
+        if self.IsRecordEnabled():
+            if not restart:
+                Log.warning(
+                    "Attempted to start perf, but it is already running")
+                Log.warning("Killing current perf session to start a new one")
+            self.StopRecord()
+
+        Log.info("Initializing perf record, please wait...")
+
+        # Get a new temporary prefix. We specifically want the
+        # deprecated mktemp style semantics here, since we don't
+        # want/need an open file pointer and since perf record
+        # will append a timestamp anyway, so a custom method
+        # to generate a random temporary file prefix is used.
+        filename = self.NewTempPrefix()
+
+        self.perfDaemon = self.PerfDaemon(
+            self.PerfCmd(
+                "record", "-Fmax", "-m1M", "--overwrite",
+                "--switch-output", "--switch-max-files", "1",
+                "-o", filename, background=True),
+            filename
+        )
+
+        if self.IsRecordEnabled():
+            Log.info("Perf record started")
+        else:
+            Die("Failed to successfully start perf recording. Aborting")
+
+    def StopRecord(self, *, quiet=False):
+        if not self.IsRecordEnabled():
+            if not quiet:
+                Log.error("Attempted to stop recording, but recording not enabled")
+            return
+
+        if not quiet:
+            Log.info("perf record stopping...")
+
+        self.perfDaemon.Terminate()
+
+        # perf always spits out one last file and there's currently
+        # no way to disable this. We don't want this file or care
+        # about it, so try to simply remove it.
+        filename = self.perfDaemon.TraceFile()
+        try:
+            os.remove(filename)
+        except (FileNotFoundError, TypeError) as e:
+            if not quiet:
+                Log.warning(
+                    "Could not delete final data file as it does not exist")
+                Log.warning(f"May be leaking {filename}")
+
+        # For some reason, perf also creates an empty file
+        # with the prefix name we've provided. This file is not
+        # needed for anything, so if happens to exist remove it here.
+        if os.path.isfile(self.perfDaemon.filename):
+            os.remove(self.perfDaemon.filename)
+
+        self.perfDaemon = None
+
+        if not quiet:
+            Log.info("perf record stopped")
+
+    def CaptureTrace(self, path):
+        if not self.IsRecordEnabled():
+            Log.error("Attempted perf trace capture, but no trace was enabled")
+            return False
+
+        Log.info(f"perf trace capture requested: {path}")
+        Log.info("Requesting capture. This may take some time")
+
+        self.perfDaemon.RequestCapture()
+        filename = self.perfDaemon.WaitTraceFile(15000)
+
+        if not isinstance(filename, str):
+            Log.error("Failed to capture trace.")
+            # Unfortunately, it is necessary to switch to another
+            # temporary filename here to avoid a race condition
+            # on future captures.
+            Log.warn("Force restarting as a precaution.")
+            self.StartRecord(restart=True)
+            return False
+
+        Log.info("Trace file successfully generated. Converting to JSON...")
+
+        try:
+            self.PerfCmd(
+                "data", "convert", "-i", filename, "--to-json", path,
+                "--force")
+            os.chmod(path, self.captureMask)
+        except Exception as e:
+            Log.error("Could not convert perf trace to JSON")
+            return False
+        finally:
+            # We know this file exists, so this should never fail.
+            try:
+                os.remove(filename)
+            except Exception:
+                pass
+
+        Log.info("perf trace file written to requested path")
+        return True
+
+    def PerfCmd(self, *args, background=False):
+        procArgs = [self.perfCmd]
+        for arg in args:
+            if isinstance(arg, list):
+                procArgs.extend(arg)
+            else:
+                procArgs.append(arg)
+        return RunCommand(procArgs, background)
+
+    def IsRecordEnabled(self):
+        return self.perfDaemon is not None and self.perfDaemon.IsRunning()
+
+    def NewTempPrefix(self):
+        r = ''.join(random.choice(string.ascii_letters) for _ in range(10))
+        return f"/tmp/perf.{r}.dat"
 
 ####################################
 # Signal Handlers
