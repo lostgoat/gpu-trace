@@ -147,8 +147,8 @@ def RunCommand(cmd, background=False):
 
     # Log.debug( f"Executing {execCmd}" );
     if background:
-        subprocess.Popen(cmd)
-        return ""
+        return subprocess.Popen(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     else:
         cmdProc = subprocess.run(execCmd, capture_output=True)
         # Log.debug( f"return: {cmdProc.returncode}" );
