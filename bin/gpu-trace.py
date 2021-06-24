@@ -535,13 +535,16 @@ class Daemon:
         self.args = args
         self.server = None
         self.gpuTrace = GpuTrace()
+        self.perfTrace = None
         self.capturing = False
 
         self.RpcServerSetup()
-        
+
+        if State().config.GetConfigValue("PerfRecording", False):
+            self.perfTrace = PerfTrace()
+
         if State.config.GetConfigValue('StartupCapture', False):
-            self.gpuTrace.StartCapture()
-            self.capturing = True
+            self.RpcStart(quiet=True)
         else:
             Log.info('Startup tracing is disabled')
 
@@ -559,31 +562,44 @@ class Daemon:
     def Shutdown(self):
         Log.info("Daemon shutdown request received")
         _thread.start_new_thread(Daemon.ShutdownWork, (self.server,))
-        self.gpuTrace.StopCapture()
+        self.RpcStop(quiet=True)
         sys.exit()
 
-    def RpcCapture(self, path):
+    def RpcCapture(self, path, perf_path="/dev/null"):
         Log.info(f"Executing capture command: {path}")
-        return self.gpuTrace.CaptureTrace(path.strip())
 
-    def RpcStart(self):
-        Log.info(f"Executing start command")
+        res = self.gpuTrace.CaptureTrace(path.strip())
+        if self.perfTrace is not None:
+            res = self.perfTrace.CaptureTrace(perf_path.strip()) and res
+
+        return res
+
+    def RpcStart(self, *, quiet=False):
+        if not quiet:
+            Log.info(f"Executing start command")
 
         if self.capturing:
             return True
 
         self.gpuTrace.StartCapture()
+        if self.perfTrace is not None:
+            self.perfTrace.StartRecord()
         self.capturing = True
+
         return True
 
-    def RpcStop(self):
-        Log.info(f"Executing stop command")
+    def RpcStop(self, *, quiet=False):
+        if not quiet:
+            Log.info(f"Executing stop command")
 
         if not self.capturing:
             return True
 
         self.gpuTrace.StopCapture()
+        if self.perfTrace is not None:
+            self.perfTrace.StopRecord()
         self.capturing = False
+
         return True
 
     def RpcExit(self):
@@ -613,15 +629,21 @@ def ClientMain(args):
 
     with xmlrpc.client.ServerProxy(rpcServerUrl) as rpcServer:
         if args.command_capture:
-            Log.info(f"Requesting capture to {args.output_dat} ...")
-            ret = rpcServer.capture(args.output_dat)
+            captureArgs = [args.output_dat]
+
+            if State().config.GetConfigValue("PerfRecording", False):
+                captureArgs.append(args.perf_json)
+
+            Log.info(f"Requesting capture to {captureArgs} ...")
+
+            ret = rpcServer.capture(*captureArgs)
 
             if not ret:
                 Log.info("Capture request failed")
                 return False
 
             if args.open_gpuvis:
-                GpuVis().OpenTrace(args.output_dat)
+                GpuVis().OpenTrace(*captureArgs)
             return True
 
         if args.command_exit:
@@ -693,13 +715,13 @@ def Main():
     parser.add_argument('--get-startup-tracing', action="store_true",
                         help="Check if the service will start tracing on startup")
     parser.add_argument('--enable-perf-recording', action=argparse.BooleanOptionalAction,
-                        help="Enable/disable perf recording when tracing.")
+                        help="Enable/disable perf recording when tracing. Requires restart.")
     parser.add_argument('--get-perf-recording', action="store_true",
                         help="Check if the service will run pref alongside trace-cmd.")
 
     # Rpc commands
     parser.add_argument('--capture', action="store_true", dest="command_capture",
-                        default=False, help="Send a capture request to the Daemon. See OUTPUT_DAT for path.")
+                        default=False, help="Send a capture request to the Daemon. See OUTPUT_DAT and PERF_JSON for paths.")
     parser.add_argument('--exit', action="store_true", dest="command_exit",
                         default=False, help="Send an exit command to the Daemon.")
     parser.add_argument('--start', action="store_true", dest="command_start",
