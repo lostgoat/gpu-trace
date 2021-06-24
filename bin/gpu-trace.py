@@ -350,7 +350,8 @@ class Daemon:
         self.server.serve_forever()
         Log.info('GPU Trace daemon exiting')
 
-    def ShutdownWork(self, server):
+    @staticmethod
+    def ShutdownWork(server):
         if server is not None:
             Log.info("Shutting down rpc server")
             server.shutdown()
