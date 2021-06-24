@@ -677,7 +677,11 @@ def Main():
     parser.add_argument('--enable-startup-tracing', action=argparse.BooleanOptionalAction,
                         help="Enable/disable tracing on service startup")
     parser.add_argument('--get-startup-tracing', action="store_true",
-                        help="Check if the the service will start tracing on startup")
+                        help="Check if the service will start tracing on startup")
+    parser.add_argument('--enable-perf-recording', action=argparse.BooleanOptionalAction,
+                        help="Enable/disable perf recording when tracing.")
+    parser.add_argument('--get-perf-recording', action="store_true",
+                        help="Check if the service will run pref alongside trace-cmd.")
 
     # Rpc commands
     parser.add_argument('--capture', action="store_true", dest="command_capture",
@@ -719,6 +723,10 @@ def Main():
         State().config.SetConfigValue("StartupCapture", args.enable_startup_tracing)
     elif args.get_startup_tracing:
         print( "1" if State().config.GetConfigValue("StartupCapture", None) else "0" )
+    elif args.enable_perf_recording is not None:
+        State().config.SetConfigValue("PerfRecording", args.enable_perf_recording)
+    elif args.get_perf_recording:
+        print( "1" if State().config.GetConfigValue("PerfRecording", None) else "0" )
     else:
         StandaloneMain(args)
 
