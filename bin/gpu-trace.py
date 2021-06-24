@@ -519,8 +519,11 @@ class GpuVis:
         self.gpuvis = GetBinary('gpuvis')
         self.user = RunCommand('logname').strip()
 
-    def OpenTrace(self, path):
-        RunCommand(["sudo", "-u", self.user, self.gpuvis, path], True)
+    def OpenTrace(self, path, perf_path=None):
+        gpuvis_args = ["sudo", "-u", self.user, self.gpuvis, path]
+        if perf_path is not None:
+            gpuvis_args.append(perf_path)
+        RunCommand(gpuvis_args, True)
 
 ####################################
 # Daemon
@@ -646,12 +649,21 @@ def StandaloneMain(args):
     gpuTrace = GpuTrace()
     gpuTrace.StartCapture()
 
+    perfTrace = None
+    if State().config.GetConfigValue("PerfRecording", False):
+        perfTrace = PerfTrace()
+        perfTrace.StartRecord()
+
     State().traceExitEvent.wait()
 
     gpuTrace.CaptureTrace(args.output_dat)
 
     if args.open_gpuvis:
-        GpuVis().OpenTrace(args.output_dat)
+        gpuvisArgs = [args.output_dat]
+        if perfTrace is not None and perfTrace.CaptureTrace(args.perf_json):
+            gpuvisArgs.append(args.perf_json)
+
+        GpuVis().OpenTrace(*gpuvisArgs)
 
 
 ####################################
@@ -670,6 +682,8 @@ def Main():
                         help="Log all messages to this file")
     parser.add_argument('-o', '--output-dat', dest="output_dat",
                         default="gputrace.dat", help="Trace output filename")
+    parser.add_argument('--output-json', dest="perf_json", default="perf.json",
+                        help="perf recording output filename")
     parser.add_argument('--no-gpuvis', action="store_false", dest="open_gpuvis",
                         default=True, help="Don't open gpuvis when a capture is taken")
 
