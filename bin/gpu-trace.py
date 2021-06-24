@@ -448,7 +448,9 @@ def StandaloneMain(args):
     State().traceExitEvent.wait()
 
     gpuTrace.CaptureTrace(args.output_dat)
-    GpuVis().OpenTrace(args.output_dat)
+
+    if args.open_gpuvis:
+        GpuVis().OpenTrace(args.output_dat)
 
 
 ####################################
