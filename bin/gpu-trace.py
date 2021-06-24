@@ -514,7 +514,7 @@ def Main():
         ClientMain(args)
     elif args.enable_startup_tracing is not None:
         State().config.SetConfigValue("StartupCapture", args.enable_startup_tracing)
-    elif args.get_startup_tracing is not None:
+    elif args.get_startup_tracing:
         print( "1" if State().config.GetConfigValue("StartupCapture", None) else "0" )
     else:
         StandaloneMain(args)
