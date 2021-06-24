@@ -196,7 +196,7 @@ class GpuTrace:
     def __del__(self):
         if self.traceCapable:
             if self.IsTraceEnabled():
-                self.StopCapture()
+                self.StopCapture(quiet=True)
 
     def TraceSetup(self):
         try:
@@ -224,12 +224,15 @@ class GpuTrace:
         self.TraceCmd("start", "-b", "8000", "-D", "-i", self.traceEventArgs)
         Log.info("GPU Trace started")
 
-    def StopCapture(self):
+    def StopCapture(self, *, quiet=False):
         if not self.IsTraceEnabled():
-            Log.error("Attempted to stop trace, but no trace was enabled")
+            if not quiet:
+                Log.error("Attempted to stop trace, but no trace was enabled")
             return
 
-        Log.info("GPU Trace stopping")
+        if not quiet:
+            Log.info("GPU Trace stopping")
+
         self.TraceCmd("reset")
         self.TraceCmd("snapshot", "-f")
         self.TraceCmd("stop")
