@@ -135,7 +135,7 @@ def SetupLogging(logPath, logLevel):
 def GetBinary(name):
     path = shutil.which(name)
 
-    if not path.strip():
+    if path is None or not path.strip():
         Die(f"Failed to find binary in PATH: {name}")
 
     Log.debug(f"Found {name} at {path}")
