@@ -23,6 +23,7 @@
 # SOFTWARE.
 
 import os
+import os.path
 import sys
 import stat
 import time
@@ -37,6 +38,9 @@ import atexit
 from xmlrpc.server import SimpleXMLRPCServer
 import xmlrpc.client
 import json
+import random
+import string
+import glob
 
 
 ####################################
@@ -135,7 +139,7 @@ def SetupLogging(logPath, logLevel):
 def GetBinary(name):
     path = shutil.which(name)
 
-    if not path.strip():
+    if path is None or not path.strip():
         Die(f"Failed to find binary in PATH: {name}")
 
     Log.debug(f"Found {name} at {path}")
@@ -147,8 +151,9 @@ def RunCommand(cmd, background=False):
 
     # Log.debug( f"Executing {execCmd}" );
     if background:
-        subprocess.Popen(cmd)
-        return ""
+        return subprocess.Popen(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
     else:
         cmdProc = subprocess.run(execCmd, capture_output=True)
         # Log.debug( f"return: {cmdProc.returncode}" );
@@ -196,7 +201,7 @@ class GpuTrace:
     def __del__(self):
         if self.traceCapable:
             if self.IsTraceEnabled():
-                self.StopCapture()
+                self.StopCapture(quiet=True)
 
     def TraceSetup(self):
         try:
@@ -224,12 +229,15 @@ class GpuTrace:
         self.TraceCmd("start", "-b", "8000", "-D", "-i", self.traceEventArgs)
         Log.info("GPU Trace started")
 
-    def StopCapture(self):
+    def StopCapture(self, *, quiet=False):
         if not self.IsTraceEnabled():
-            Log.error("Attempted to stop trace, but no trace was enabled")
+            if not quiet:
+                Log.error("Attempted to stop trace, but no trace was enabled")
             return
 
-        Log.info("GPU Trace stopping")
+        if not quiet:
+            Log.info("GPU Trace stopping")
+
         self.TraceCmd("reset")
         self.TraceCmd("snapshot", "-f")
         self.TraceCmd("stop")
@@ -300,6 +308,198 @@ class GpuTrace:
     ]
 
 ####################################
+# Managing perf
+####################################
+class PerfTrace:
+    class PerfDaemon:
+        def __init__(self, proc, filename):
+            self.proc = proc
+            self.filename = filename
+
+        def __del__(self):
+            if self.IsRunning():
+                self.Terminate()
+
+        def IsRunning(self):
+            return self.proc.poll() is None
+
+        def Terminate(self):
+            self.proc.terminate()
+            self.proc.wait()
+
+        def RequestCapture(self):
+            self.proc.send_signal(signal.SIGUSR2)
+
+        def TraceFile(self):
+            r = glob.glob(f"{self.filename}.*")
+            return r[0] if len(r) > 0 else None
+
+        def WaitTraceFile(self, delay_ms):
+            # Implicitly rounds any nonzero value up to the next
+            # greatest multiple of 500ms.
+
+            delay_s = delay_ms * 0.001
+
+            while self.TraceFile() is None and delay_s > 0:
+                time.sleep(0.5)
+                delay_s -= 0.5
+
+            return self.TraceFile()
+
+    def __init__(self):
+        self.perfCmd = GetBinary('perf')
+        self.captureMask = 0o666
+        self.perfCapable = False
+        self.perfDaemon = None
+
+        # Ensure that an appropriate version of perf is available
+        # and that we can run a perf trace.
+        self.EnsurePerfCapable()
+
+    def __del__(self):
+        if self.perfCapable:
+            if self.IsRecordEnabled():
+                self.StopRecord(quiet=True)
+
+    def EnsurePerfCapable(self):
+        try:
+            res = subprocess.run(
+                [self.perfCmd, "data", "convert", "--help"],
+                capture_output=True)
+            if res.stderr.find(b"--to-json") < 0:
+                Die("No perf data convert --to-json support")
+        except Exception as e:
+            Die("Failed run perf. Is it installed?", e)
+
+        try:
+            # This will take some time, but it shouldn't be longer than
+            # a second or two.
+            self.PerfCmd("record", "-Fmax", "-o/dev/null", "--", "echo")
+            self.perfCapable = True
+        except Exception as e:
+            Die("Failed run perf record, are you root?", e)
+
+    def StartRecord(self, restart=False):
+        if self.IsRecordEnabled():
+            if not restart:
+                Log.warning(
+                    "Attempted to start perf, but it is already running")
+                Log.warning("Killing current perf session to start a new one")
+            self.StopRecord()
+
+        Log.info("Initializing perf record, please wait...")
+
+        # Get a new temporary prefix. We specifically want the
+        # deprecated mktemp style semantics here, since we don't
+        # want/need an open file pointer and since perf record
+        # will append a timestamp anyway, so a custom method
+        # to generate a random temporary file prefix is used.
+        filename = self.NewTempPrefix()
+
+        self.perfDaemon = self.PerfDaemon(
+            self.PerfCmd(
+                "record", "-Fmax", "-m1M", "--overwrite",
+                "--switch-output", "--switch-max-files", "1",
+                "-o", filename, background=True),
+            filename
+        )
+
+        if self.IsRecordEnabled():
+            Log.info("Perf record started")
+        else:
+            Die("Failed to successfully start perf recording. Aborting")
+
+    def StopRecord(self, *, quiet=False):
+        if not self.IsRecordEnabled():
+            if not quiet:
+                Log.error("Attempted to stop recording, but recording not enabled")
+            return
+
+        if not quiet:
+            Log.info("perf record stopping...")
+
+        self.perfDaemon.Terminate()
+
+        # perf always spits out one last file and there's currently
+        # no way to disable this. We don't want this file or care
+        # about it, so try to simply remove it.
+        filename = self.perfDaemon.TraceFile()
+        try:
+            os.remove(filename)
+        except (FileNotFoundError, TypeError) as e:
+            if not quiet:
+                Log.warning(
+                    "Could not delete final data file as it does not exist")
+                Log.warning(f"May be leaking {filename}")
+
+        # For some reason, perf also creates an empty file
+        # with the prefix name we've provided. This file is not
+        # needed for anything, so if happens to exist remove it here.
+        if os.path.isfile(self.perfDaemon.filename):
+            os.remove(self.perfDaemon.filename)
+
+        self.perfDaemon = None
+
+        if not quiet:
+            Log.info("perf record stopped")
+
+    def CaptureTrace(self, path):
+        if not self.IsRecordEnabled():
+            Log.error("Attempted perf trace capture, but no trace was enabled")
+            return False
+
+        Log.info(f"perf trace capture requested: {path}")
+        Log.info("Requesting capture. This may take some time")
+
+        self.perfDaemon.RequestCapture()
+        filename = self.perfDaemon.WaitTraceFile(15000)
+
+        if not isinstance(filename, str):
+            Log.error("Failed to capture trace.")
+            # Unfortunately, it is necessary to switch to another
+            # temporary filename here to avoid a race condition
+            # on future captures.
+            Log.warn("Force restarting as a precaution.")
+            self.StartRecord(restart=True)
+            return False
+
+        Log.info("Trace file successfully generated. Converting to JSON...")
+
+        try:
+            self.PerfCmd(
+                "data", "convert", "-i", filename, "--to-json", path,
+                "--force")
+            os.chmod(path, self.captureMask)
+        except Exception as e:
+            Log.error("Could not convert perf trace to JSON")
+            return False
+        finally:
+            # We know this file exists, so this should never fail.
+            try:
+                os.remove(filename)
+            except Exception:
+                pass
+
+        Log.info("perf trace file written to requested path")
+        return True
+
+    def PerfCmd(self, *args, background=False):
+        procArgs = [self.perfCmd]
+        for arg in args:
+            if isinstance(arg, list):
+                procArgs.extend(arg)
+            else:
+                procArgs.append(arg)
+        return RunCommand(procArgs, background)
+
+    def IsRecordEnabled(self):
+        return self.perfDaemon is not None and self.perfDaemon.IsRunning()
+
+    def NewTempPrefix(self):
+        r = ''.join(random.choice(string.ascii_letters) for _ in range(10))
+        return f"/tmp/perf.{r}.dat"
+
+####################################
 # Signal Handlers
 ####################################
 def SigIntHandler(sig, frame):
@@ -319,8 +519,11 @@ class GpuVis:
         self.gpuvis = GetBinary('gpuvis')
         self.user = RunCommand('logname').strip()
 
-    def OpenTrace(self, path):
-        RunCommand(["sudo", "-u", self.user, self.gpuvis, path], True)
+    def OpenTrace(self, path, perf_path=None):
+        gpuvis_args = ["sudo", "-u", self.user, self.gpuvis, path]
+        if perf_path is not None:
+            gpuvis_args.append(perf_path)
+        RunCommand(gpuvis_args, True)
 
 ####################################
 # Daemon
@@ -332,13 +535,16 @@ class Daemon:
         self.args = args
         self.server = None
         self.gpuTrace = GpuTrace()
+        self.perfTrace = None
         self.capturing = False
 
         self.RpcServerSetup()
-        
+
+        if State().config.GetConfigValue("PerfRecording", False):
+            self.perfTrace = PerfTrace()
+
         if State.config.GetConfigValue('StartupCapture', False):
-            self.gpuTrace.StartCapture()
-            self.capturing = True
+            self.RpcStart(quiet=True)
         else:
             Log.info('Startup tracing is disabled')
 
@@ -347,7 +553,8 @@ class Daemon:
         self.server.serve_forever()
         Log.info('GPU Trace daemon exiting')
 
-    def ShutdownWork(self, server):
+    @staticmethod
+    def ShutdownWork(server):
         if server is not None:
             Log.info("Shutting down rpc server")
             server.shutdown()
@@ -355,31 +562,44 @@ class Daemon:
     def Shutdown(self):
         Log.info("Daemon shutdown request received")
         _thread.start_new_thread(Daemon.ShutdownWork, (self.server,))
-        self.gpuTrace.StopCapture()
+        self.RpcStop(quiet=True)
         sys.exit()
 
-    def RpcCapture(self, path):
+    def RpcCapture(self, path, perf_path="/dev/null"):
         Log.info(f"Executing capture command: {path}")
-        return self.gpuTrace.CaptureTrace(path.strip())
 
-    def RpcStart(self):
-        Log.info(f"Executing start command")
+        res = self.gpuTrace.CaptureTrace(path.strip())
+        if self.perfTrace is not None:
+            res = self.perfTrace.CaptureTrace(perf_path.strip()) and res
+
+        return res
+
+    def RpcStart(self, *, quiet=False):
+        if not quiet:
+            Log.info(f"Executing start command")
 
         if self.capturing:
             return True
 
         self.gpuTrace.StartCapture()
+        if self.perfTrace is not None:
+            self.perfTrace.StartRecord()
         self.capturing = True
+
         return True
 
-    def RpcStop(self):
-        Log.info(f"Executing stop command")
+    def RpcStop(self, *, quiet=False):
+        if not quiet:
+            Log.info(f"Executing stop command")
 
         if not self.capturing:
             return True
 
         self.gpuTrace.StopCapture()
+        if self.perfTrace is not None:
+            self.perfTrace.StopRecord()
         self.capturing = False
+
         return True
 
     def RpcExit(self):
@@ -409,15 +629,21 @@ def ClientMain(args):
 
     with xmlrpc.client.ServerProxy(rpcServerUrl) as rpcServer:
         if args.command_capture:
-            Log.info(f"Requesting capture to {args.output_dat} ...")
-            ret = rpcServer.capture(args.output_dat)
+            captureArgs = [args.output_dat]
+
+            if State().config.GetConfigValue("PerfRecording", False):
+                captureArgs.append(args.perf_json)
+
+            Log.info(f"Requesting capture to {captureArgs} ...")
+
+            ret = rpcServer.capture(*captureArgs)
 
             if not ret:
                 Log.info("Capture request failed")
                 return False
 
             if args.open_gpuvis:
-                GpuVis().OpenTrace(args.output_dat)
+                GpuVis().OpenTrace(*captureArgs)
             return True
 
         if args.command_exit:
@@ -445,10 +671,21 @@ def StandaloneMain(args):
     gpuTrace = GpuTrace()
     gpuTrace.StartCapture()
 
+    perfTrace = None
+    if State().config.GetConfigValue("PerfRecording", False):
+        perfTrace = PerfTrace()
+        perfTrace.StartRecord()
+
     State().traceExitEvent.wait()
 
     gpuTrace.CaptureTrace(args.output_dat)
-    GpuVis().OpenTrace(args.output_dat)
+
+    if args.open_gpuvis:
+        gpuvisArgs = [args.output_dat]
+        if perfTrace is not None and perfTrace.CaptureTrace(args.perf_json):
+            gpuvisArgs.append(args.perf_json)
+
+        GpuVis().OpenTrace(*gpuvisArgs)
 
 
 ####################################
@@ -467,6 +704,8 @@ def Main():
                         help="Log all messages to this file")
     parser.add_argument('-o', '--output-dat', dest="output_dat",
                         default="gputrace.dat", help="Trace output filename")
+    parser.add_argument('--output-json', dest="perf_json", default="perf.json",
+                        help="perf recording output filename")
     parser.add_argument('--no-gpuvis', action="store_false", dest="open_gpuvis",
                         default=True, help="Don't open gpuvis when a capture is taken")
 
@@ -474,11 +713,15 @@ def Main():
     parser.add_argument('--enable-startup-tracing', action=argparse.BooleanOptionalAction,
                         help="Enable/disable tracing on service startup")
     parser.add_argument('--get-startup-tracing', action="store_true",
-                        help="Check if the the service will start tracing on startup")
+                        help="Check if the service will start tracing on startup")
+    parser.add_argument('--enable-perf-recording', action=argparse.BooleanOptionalAction,
+                        help="Enable/disable perf recording when tracing. Requires restart.")
+    parser.add_argument('--get-perf-recording', action="store_true",
+                        help="Check if the service will run pref alongside trace-cmd.")
 
     # Rpc commands
     parser.add_argument('--capture', action="store_true", dest="command_capture",
-                        default=False, help="Send a capture request to the Daemon. See OUTPUT_DAT for path.")
+                        default=False, help="Send a capture request to the Daemon. See OUTPUT_DAT and PERF_JSON for paths.")
     parser.add_argument('--exit', action="store_true", dest="command_exit",
                         default=False, help="Send an exit command to the Daemon.")
     parser.add_argument('--start', action="store_true", dest="command_start",
@@ -514,8 +757,12 @@ def Main():
         ClientMain(args)
     elif args.enable_startup_tracing is not None:
         State().config.SetConfigValue("StartupCapture", args.enable_startup_tracing)
-    elif args.get_startup_tracing is not None:
+    elif args.get_startup_tracing:
         print( "1" if State().config.GetConfigValue("StartupCapture", None) else "0" )
+    elif args.enable_perf_recording is not None:
+        State().config.SetConfigValue("PerfRecording", args.enable_perf_recording)
+    elif args.get_perf_recording:
+        print( "1" if State().config.GetConfigValue("PerfRecording", None) else "0" )
     else:
         StandaloneMain(args)
 
