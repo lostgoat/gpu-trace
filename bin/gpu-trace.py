@@ -679,10 +679,13 @@ def StandaloneMain(args):
     State().traceExitEvent.wait()
 
     gpuTrace.CaptureTrace(args.output_dat)
+    perfCaptured = False
+    if perfTrace is not None:
+        perfCaptured = perfTrace.CaptureTrace(args.perf_json)
 
     if args.open_gpuvis:
         gpuvisArgs = [args.output_dat]
-        if perfTrace is not None and perfTrace.CaptureTrace(args.perf_json):
+        if perfCaptured:
             gpuvisArgs.append(args.perf_json)
 
         GpuVis().OpenTrace(*gpuvisArgs)
