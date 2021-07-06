@@ -402,8 +402,8 @@ class PerfTrace:
 
         self.perfDaemon = self.PerfDaemon(
             self.PerfCmd(
-                "record", "-Fmax", "-m1M", "--overwrite",
-                "--switch-output", "--switch-max-files", "1",
+                "record", "-Fmax", "-m1M", "--overwrite", "--call-graph",
+                "fp", "--switch-output", "--switch-max-files", "1",
                 "-o", filename, background=True),
             filename
         )
