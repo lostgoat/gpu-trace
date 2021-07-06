@@ -738,6 +738,7 @@ def Main():
 
     # Store the path arguments as full paths
     args.output_dat = os.path.realpath(args.output_dat)
+    args.perf_json = os.path.realpath(args.perf_json)
 
     if not args.logfile:
         if args.daemon:
