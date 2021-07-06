@@ -52,7 +52,7 @@ class Config:
         self.LoadConfig()
 
     def GetConfigDir(self):
-        fallbackDir = os.path.join(os.getenv('HOME'), '.config')
+        fallbackDir = os.path.join(os.getenv('HOME', ''), '.config')
         configRoot = os.path.realpath(os.getenv('XDG_CONFIG_HOME', fallbackDir))
         return os.path.join(configRoot, 'gpu-trace')
 
