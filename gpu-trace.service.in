@@ -2,6 +2,7 @@
 Description=GPU performance capture daemon
 
 [Service]
+Environment=HOME=%h
 ExecStart=##INSTALL_PREFIX##/bin/gpu-trace --daemon
 ExecStop=##INSTALL_PREFIX##/bin/gpu-trace --exit
 
