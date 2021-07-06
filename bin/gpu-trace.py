@@ -758,6 +758,7 @@ def Main():
     Log.debug(f"Verbose output: {args.verbose}")
     Log.debug(f"Logfile: {args.logfile}")
     Log.debug(f"Output dat: {args.output_dat}")
+    Log.debug(f"Config file: {State().config.GetConfigFile()}")
 
     if args.daemon:
         daemon = Daemon(args)
