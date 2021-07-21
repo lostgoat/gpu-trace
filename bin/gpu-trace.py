@@ -32,6 +32,7 @@ import argparse
 import subprocess
 import shutil
 import signal
+import tempfile
 import threading
 import _thread
 import atexit
@@ -41,6 +42,7 @@ import json
 import random
 import string
 import glob
+from zipfile import ZipFile
 
 
 ####################################
@@ -112,6 +114,20 @@ def Die(msg, previousException=None):
         sys.exit(-1)
     else:
         raise previousException
+
+
+def TempPath(prefix=None, suffix=None):
+    f = tempfile.NamedTemporaryFile(prefix=prefix, suffix=suffix, delete=False)
+    p = f.name
+    f.close()
+    os.chmod(p, 0o666)
+    return p
+
+
+def CreateArchive(out_path, paths):
+    with ZipFile(out_path, 'w') as z:
+        for p in paths:
+            z.write(p, arcname=os.path.basename(p))
 
 
 # For logging purposes output directly to Log
@@ -523,10 +539,8 @@ class GpuVis:
         self.gpuvis = GetBinary('gpuvis')
         self.user = RunCommand('logname').strip()
 
-    def OpenTrace(self, path, perf_path=None):
+    def OpenTrace(self, path):
         gpuvis_args = ["sudo", "-u", self.user, self.gpuvis, path]
-        if perf_path is not None:
-            gpuvis_args.append(perf_path)
         RunCommand(gpuvis_args, True)
 
 ####################################
@@ -574,19 +588,35 @@ class Daemon:
         self.RpcStop(quiet=True)
         sys.exit()
 
-    def RpcCapture(self, path, perf_path="/dev/null"):
+    def RpcCapture(self, path):
         Log.info(f"Executing capture command: {path}")
 
-        ok = self.gpuTrace.CaptureTrace(path.strip())
+        success_code = Daemon.CAPTURE_SUCCESS
+
+        tracePath = TempPath('gputrace-', '.dat')
+        ok = self.gpuTrace.CaptureTrace(tracePath)
+        capturePaths = [tracePath]
+
         if ok and self.perfTrace.perfCapable:
             # If we're supposed to be perf capable but for some reason
             # this capture attempt fails, consider the capture attempt
             # to be a failure rather than partial success.
-            ok = self.perfTrace.CaptureTrace(perf_path.strip())
+            perfPath = TempPath('perf-', '.json')
+            ok = self.perfTrace.CaptureTrace(perfPath)
+            capturePaths.append(perfPath)
         else:
-            return Daemon.CAPTURE_GPU_ONLY
+            success_code = Daemon.CAPTURE_GPU_ONLY
 
-        return Daemon.CAPTURE_SUCCESS if ok else Daemon.CAPTURE_FAILURE
+        if ok:
+            CreateArchive(path.strip(), capturePaths)
+
+        for p in capturePaths:
+            try:
+                os.unlink(p)
+            except FileNotFoundError:
+                pass
+
+        return success_code if ok else Daemon.CAPTURE_FAILURE
 
     def RpcStart(self, *, quiet=False):
         if not quiet:
@@ -643,11 +673,10 @@ def ClientMain(args):
 
     with xmlrpc.client.ServerProxy(rpcServerUrl) as rpcServer:
         if args.command_capture:
-            captureArgs = [args.output_dat, args.perf_json]
 
-            Log.info(f"Requesting capture to {captureArgs} ...")
+            Log.info(f"Requesting capture to {args.output} ...")
 
-            ret = rpcServer.capture(*captureArgs)
+            ret = rpcServer.capture(args.output)
 
             if ret == Daemon.CAPTURE_FAILURE:
                 Log.info("Capture request failed")
@@ -655,10 +684,9 @@ def ClientMain(args):
             if ret == Daemon.CAPTURE_GPU_ONLY:
                 Log.warning(
                     "Failed to capture a perf trace. Continuing without it.")
-                _ = captureArgs.pop()
 
             if args.open_gpuvis:
-                GpuVis().OpenTrace(*captureArgs)
+                GpuVis().OpenTrace(args.output)
             return True
 
         if args.command_exit:
@@ -696,17 +724,27 @@ def StandaloneMain(args):
 
     State().traceExitEvent.wait()
 
-    gpuTrace.CaptureTrace(args.output_dat)
-    perfCaptured = False
-    if perfTrace.perfCapable:
-        perfCaptured = perfTrace.CaptureTrace(args.perf_json)
+    tracePath = TempPath('gputrace-', '.dat')
+    ok = gpuTrace.CaptureTrace(tracePath)
+
+    capturePaths = [tracePath]
+
+    if ok and perfTrace.perfCapable:
+        perfPath = TempPath('perf-', '.json')
+        ok = perfTrace.CaptureTrace(perfPath)
+        capturePaths.append(perfPath)
+
+    if ok:
+        CreateArchive(args.output, capturePaths)
+
+    for p in capturePaths:
+        try:
+            os.unlink(p)
+        except FileNotFoundError:
+            pass
 
     if args.open_gpuvis:
-        gpuvisArgs = [args.output_dat]
-        if perfCaptured:
-            gpuvisArgs.append(args.perf_json)
-
-        GpuVis().OpenTrace(*gpuvisArgs)
+        GpuVis().OpenTrace(args.output)
 
 
 ####################################
@@ -723,10 +761,8 @@ def Main():
                         default=False, help="Enable verbose output")
     parser.add_argument('-l', '--logfile', default="",
                         help="Log all messages to this file")
-    parser.add_argument('-o', '--output-dat', dest="output_dat",
-                        default="gputrace.dat", help="Trace output filename")
-    parser.add_argument('--output-json', dest="perf_json", default="perf.json",
-                        help="perf recording output filename")
+    parser.add_argument('-o', '--output', dest="output",
+                        default="gpu-trace.zip", help="Trace output filename")
     parser.add_argument('--no-gpuvis', action="store_false", dest="open_gpuvis",
                         default=True, help="Don't open gpuvis when a capture is taken")
 
@@ -751,8 +787,7 @@ def Main():
     args = parser.parse_args()
 
     # Store the path arguments as full paths
-    args.output_dat = os.path.realpath(args.output_dat)
-    args.perf_json = os.path.realpath(args.perf_json)
+    args.output = os.path.realpath(args.output)
 
     if not args.logfile:
         if args.daemon:
@@ -772,7 +807,7 @@ def Main():
     Log.debug(f"Daemon mode: {args.daemon}")
     Log.debug(f"Verbose output: {args.verbose}")
     Log.debug(f"Logfile: {args.logfile}")
-    Log.debug(f"Output dat: {args.output_dat}")
+    Log.debug(f"Output path: {args.output}")
     Log.debug(f"Config file: {State().config.GetConfigFile()}")
 
     if args.daemon:
