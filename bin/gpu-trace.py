@@ -209,7 +209,7 @@ class GpuTrace:
 
         self.TraceSetup()
 
-        self.traceEventArgs = []
+        self.traceEventArgs = ["-C", "perf"]
         for event in GpuTrace.traceEvents:
             self.traceEventArgs.append("-e")
             self.traceEventArgs.append(f"{event}")
