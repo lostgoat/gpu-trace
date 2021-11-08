@@ -209,7 +209,7 @@ class GpuTrace:
 
         self.TraceSetup()
 
-        self.traceEventArgs = []
+        self.traceEventArgs = ["-C", "perf"]
         for event in GpuTrace.traceEvents:
             self.traceEventArgs.append("-e")
             self.traceEventArgs.append(f"{event}")
@@ -418,7 +418,7 @@ class PerfTrace:
 
         self.perfDaemon = self.PerfDaemon(
             self.PerfCmd(
-                "record", "-Fmax", "-m1M", "--overwrite", "--call-graph",
+                "record", "-Fmax", "-m16M", "--overwrite", "--call-graph",
                 "fp", "--switch-output", "--switch-max-files", "1",
                 "-o", filename, background=True),
             filename
