@@ -392,7 +392,8 @@ class PerfTrace:
         try:
             # This will take some time, but it shouldn't be longer than
             # a second or two.
-            self.PerfCmd("record", "-Fmax", "-o/dev/null", "--", "echo")
+            self.PerfCmd("record", "--sample-cpu", "-Fmax", "-o/dev/null",
+                    "--", "echo")
         except Exception as e:
             Log.error("Failed run perf record, are you root?")
             return False
@@ -418,9 +419,9 @@ class PerfTrace:
 
         self.perfDaemon = self.PerfDaemon(
             self.PerfCmd(
-                "record", "-Fmax", "-m16M", "--overwrite", "--call-graph",
-                "fp", "--switch-output", "--switch-max-files", "1",
-                "-o", filename, background=True),
+                "record", "--sample-cpu", "-Fmax", "-m16M", "--overwrite",
+                "--call-graph", "fp", "--switch-output", "--switch-max-files",
+                "1", "-o", filename, background=True),
             filename
         )
 
