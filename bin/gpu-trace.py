@@ -560,6 +560,7 @@ class Daemon:
         self.gpuTrace = GpuTrace()
         self.perfTrace = PerfTrace()
         self.capturing = False
+        self.captureMask = 0o666
 
         if not self.perfTrace.perfCapable:
             Log.warning(
@@ -609,7 +610,9 @@ class Daemon:
             success_code = Daemon.CAPTURE_GPU_ONLY
 
         if ok:
+            Log.info(f"Creating archive: {path.strip()}")
             CreateArchive(path.strip(), capturePaths)
+            os.chmod(path.strip(), self.captureMask)
 
         for p in capturePaths:
             try:
