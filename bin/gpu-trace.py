@@ -162,7 +162,7 @@ def GetBinary(name):
     return path
 
 
-def RunCommand(cmd, background=False):
+def RunCommand(cmd, background=False, expectFail=False):
     execCmd = cmd
 
     # Log.debug( f"Executing {execCmd}" );
@@ -176,7 +176,8 @@ def RunCommand(cmd, background=False):
         # Log.debug( f"stdout: {cmdProc.stdout}" );
         # Log.debug( f"stderr: {cmdProc.stderr}" );
 
-        cmdProc.check_returncode()
+        if not expectFail:
+            cmdProc.check_returncode()
         return str(cmdProc.stdout, 'utf-8')
 
 
@@ -201,6 +202,8 @@ def AddPermissions(path, mask):
 class GpuTrace:
     def __init__(self):
         self.traceCmd = GetBinary('trace-cmd')
+        self.traceCmdVersion = self.GetTraceCmdVersion()
+        self.NeedConvert = self.HaveTraceCmdVersion([3, 1, 5])
         self.captureMask = 0o666
         self.traceCapable = False
 
@@ -225,6 +228,35 @@ class GpuTrace:
             AddPermissions("/sys/kernel/tracing/trace_marker", stat.S_IWOTH)
         except Exception as e:
             Die('Failed trace setup, are you root?', e)
+
+    def GetTraceCmdVersion(self):
+        try:
+            output = RunCommand(self.traceCmd, False, True)
+            for line in output.splitlines():
+                if "version" in line:
+                    sVersion = line.split(" ")[2].split(".")
+                    return [int(component) for component in sVersion]
+            return [0,0,0]
+        except Exception as e:
+            Die("Failed to run trace-cmd, is it installed?", e)
+
+    def HaveTraceCmdVersion(self, queryVersion):
+        if self.traceCmdVersion[0] > queryVersion[0]:
+            return True
+
+        if self.traceCmdVersion[0] < queryVersion[0]:
+            return False
+
+        if self.traceCmdVersion[1] > queryVersion[1]:
+            return True
+
+        if self.traceCmdVersion[1] < queryVersion[1]:
+            return False
+
+        if self.traceCmdVersion[2] >= queryVersion[2]:
+            return True
+
+        return False
 
     def EnsureTraceCmdCapable(self):
         try:
@@ -266,6 +298,14 @@ class GpuTrace:
         Log.info(f"GPU Trace capture requested: {path}")
         self.TraceCmd("stop")
         self.TraceCmd("extract", "-k", "-o", path)
+
+        # gpuvis currently only support file version 6
+        if self.NeedConvert:
+            Log.info(f"GPU Trace needs conversion to compatible format")
+            convertSource = path + ".tmp"
+            os.rename(path, convertSource)
+            self.TraceCmd("convert", "--file-version", "6", "-i", convertSource, "-o", path)
+
         os.chmod(path, self.captureMask)
 
         Log.debug("GPU Trace capture resuming")
