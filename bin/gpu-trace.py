@@ -203,7 +203,7 @@ class GpuTrace:
     def __init__(self):
         self.traceCmd = GetBinary('trace-cmd')
         self.traceCmdVersion = self.GetTraceCmdVersion()
-        self.NeedConvert = self.HaveTraceCmdVersion([3, 1, 5])
+        self.NeedConvert = self.HaveTraceCmdVersion([3, 1, 1])
         self.captureMask = 0o666
         self.traceCapable = False
 
