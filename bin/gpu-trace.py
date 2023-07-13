@@ -100,6 +100,7 @@ class State(object):
     daemon = None
     config = Config()
     rpcServerPort = 47317
+    tempFiles = []
 
 ####################################
 # Helpers
@@ -121,8 +122,27 @@ def TempPath(prefix=None, suffix=None):
     p = f.name
     f.close()
     os.chmod(p, 0o666)
+    State().tempFiles.append(p)
     return p
 
+def RemoveFile(path):
+    if path is None:
+        return;
+
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+def RenamePath(srcPath, dstPath):
+    RemoveFile(dstPath)
+    os.rename(srcPath, dstPath);
+
+def CleanupTempFiles():
+    for file in State().tempFiles:
+        RemoveFile(file)
+
+atexit.register(CleanupTempFiles)
 
 def CreateArchive(out_path, paths):
     with ZipFile(out_path, 'w') as z:
@@ -132,7 +152,6 @@ def CreateArchive(out_path, paths):
 
 # For logging purposes output directly to Log
 Log = logging.getLogger('gpu-trace')
-
 
 def SetupLogging(logPath, logLevel):
     Log.setLevel(logLevel)
@@ -195,6 +214,46 @@ def AddPermissions(path, mask):
     current = os.stat(path).st_mode
     if not current & mask:
         os.chmod(path, current | mask)
+
+def PerfCmd(*args, background=False):
+    procArgs = [PerfCmd.cmd]
+    for arg in args:
+        if isinstance(arg, list):
+            procArgs.extend(arg)
+        else:
+            procArgs.append(arg)
+    return RunCommand(procArgs, background)
+PerfCmd.cmd = GetBinary('perf')
+
+def ConvertPerfToJSON(perfCapturePath, jsonPath):
+    Log.info(f"Converting trace to JSON")
+    try:
+        PerfCmd( "data", "convert", "-i", perfCapturePath, "--to-json", jsonPath, "--force")
+        return True;
+    except Exception as e:
+        Log.error(f"Could not convert perf trace to JSON: {e}")
+        return False
+
+def CreateGPUVisPackage(ftraceCapturePath, perfCapturePath, outPath):
+    capturePaths=[ftraceCapturePath]
+    if perfCapturePath is not None:
+        jsonPath = TempPath('perf-', '.json')
+        if ConvertPerfToJSON(perfCapturePath, jsonPath):
+            capturePaths.append(jsonPath)
+        else:
+            Log.error(f"Failed to convert {perfCapturePath} to json, skipping")
+    else:
+        Log.info(f"No perf cature detected");
+
+    Log.info(f"Creating package: {outPath}")
+    CreateArchive(outPath, capturePaths)
+
+def ProcessCaptureResult(ftraceCapturePath, perfCapturePath, bOpenGpuVis, outPath):
+    CreateGPUVisPackage(ftraceCapturePath, perfCapturePath, outPath)
+    Log.info(f"Successfully generated trace package: {outPath}")
+
+    if bOpenGpuVis:
+        GpuVis().OpenTrace(outPath)
 
 ####################################
 # Managing trace-cmd
@@ -432,8 +491,7 @@ class PerfTrace:
         try:
             # This will take some time, but it shouldn't be longer than
             # a second or two.
-            self.PerfCmd("record", "--sample-cpu", "-Fmax", "-o/dev/null",
-                    "--", "echo")
+            PerfCmd("record", "--sample-cpu", "-Fmax", "-o/dev/null", "--", "echo")
         except Exception as e:
             Log.error("Failed run perf record, are you root?")
             return False
@@ -458,7 +516,7 @@ class PerfTrace:
         filename = self.NewTempPrefix()
 
         self.perfDaemon = self.PerfDaemon(
-            self.PerfCmd(
+            PerfCmd(
                 "record", "--sample-cpu", "-Fmax", "-m16M", "--overwrite",
                 "--call-graph", "fp", "--switch-output", "--switch-max-files",
                 "1", "-o", filename, background=True),
@@ -524,34 +582,16 @@ class PerfTrace:
             self.StartRecord(restart=True)
             return False
 
-        Log.info("Trace file successfully generated. Converting to JSON...")
-
+        # Rename our output file to the desired output file name
         try:
-            self.PerfCmd(
-                "data", "convert", "-i", filename, "--to-json", path,
-                "--force")
+            RenamePath(filename, path)
             os.chmod(path, self.captureMask)
         except Exception as e:
-            Log.error("Could not convert perf trace to JSON")
-            return False
-        finally:
-            # We know this file exists, so this should never fail.
-            try:
-                os.remove(filename)
-            except Exception:
-                pass
+            Log.error(f"Failed to rename perf capture: {e}")
+            return False;
 
         Log.info("perf trace file written to requested path")
         return True
-
-    def PerfCmd(self, *args, background=False):
-        procArgs = [self.perfCmd]
-        for arg in args:
-            if isinstance(arg, list):
-                procArgs.extend(arg)
-            else:
-                procArgs.append(arg)
-        return RunCommand(procArgs, background)
 
     def IsRecordEnabled(self):
         return self.perfDaemon is not None and self.perfDaemon.IsRunning()
@@ -589,8 +629,7 @@ class GpuVis:
 ####################################
 class Daemon:
     CAPTURE_SUCCESS = 0
-    CAPTURE_GPU_ONLY = 1
-    CAPTURE_FAILURE = 2
+    CAPTURE_FAILURE = 1
 
     def __init__(self, args):
         State().daemon = self
@@ -630,37 +669,28 @@ class Daemon:
         self.RpcStop(quiet=True)
         sys.exit()
 
-    def RpcCapture(self, path):
-        Log.info(f"Executing capture command: {path}")
+    def CleanupIntermediates(self):
+        CleanupTempFiles()
 
-        success_code = Daemon.CAPTURE_SUCCESS
+    def RpcCapture(self):
+        Log.info(f"Executing capture command")
 
+        self.CleanupIntermediates();
+
+        dictRet = {}
         tracePath = TempPath('gputrace-', '.dat')
         ok = self.gpuTrace.CaptureTrace(tracePath)
-        capturePaths = [tracePath]
+        dictRet[ "ftracepath" ] = tracePath;
 
         if ok and self.perfTrace.perfCapable:
-            # If we're supposed to be perf capable but for some reason
-            # this capture attempt fails, consider the capture attempt
-            # to be a failure rather than partial success.
-            perfPath = TempPath('perf-', '.json')
+            perfPath = TempPath('perf-', '.perf')
             ok = self.perfTrace.CaptureTrace(perfPath)
-            capturePaths.append(perfPath)
+            dictRet[ "perftracepath" ] = perfPath;
         else:
-            success_code = Daemon.CAPTURE_GPU_ONLY
+            Log.info(f"Skipping perf trace capture: not capable")
 
-        if ok:
-            Log.info(f"Creating archive: {path.strip()}")
-            CreateArchive(path.strip(), capturePaths)
-            os.chmod(path.strip(), self.captureMask)
-
-        for p in capturePaths:
-            try:
-                os.unlink(p)
-            except FileNotFoundError:
-                pass
-
-        return success_code if ok else Daemon.CAPTURE_FAILURE
+        dictRet[ "retcode" ] = Daemon.CAPTURE_SUCCESS if ok else Daemon.CAPTURE_FAILURE;
+        return dictRet;
 
     def RpcStart(self, *, quiet=False):
         if not quiet:
@@ -699,6 +729,11 @@ class Daemon:
         Log.info(f"Executing get tracing status command")
         return self.capturing
 
+    def RpcCleanup(self):
+        Log.info(f"Executing cleanup command")
+        self.CleanupIntermediates()
+        return True
+
     def RpcServerSetup(self):
         self.server = SimpleXMLRPCServer(("localhost", State().rpcServerPort))
 
@@ -707,6 +742,7 @@ class Daemon:
         self.server.register_function(self.RpcStop, "stop")
         self.server.register_function(self.RpcExit, "exit")
         self.server.register_function(self.RpcGetTracingStatus, "getTracingStatus")
+        self.server.register_function(self.RpcCleanup, "cleanup")
 
 ####################################
 # Daemon client
@@ -717,20 +753,19 @@ def ClientMain(args):
 
     with xmlrpc.client.ServerProxy(rpcServerUrl) as rpcServer:
         if args.command_capture:
+            outPath = args.output.strip();
+            Log.info(f"Requesting capture: output: {outPath}")
 
-            Log.info(f"Requesting capture to {args.output} ...")
+            ret = rpcServer.capture()
+            retcode = ret[ "retcode" ];
+            ftraceCapturePath = ret.get( "ftracepath" );
+            perfCapturePath = ret.get( "perftracepath" );
 
-            ret = rpcServer.capture(args.output)
+            if retcode is not Daemon.CAPTURE_SUCCESS:
+                Log.error(f"Failed to capture trace: response: {ret}")
 
-            if ret == Daemon.CAPTURE_FAILURE:
-                Log.info("Capture request failed")
-                return False
-            if ret == Daemon.CAPTURE_GPU_ONLY:
-                Log.warning(
-                    "Failed to capture a perf trace. Continuing without it.")
-
-            if args.open_gpuvis:
-                GpuVis().OpenTrace(args.output)
+            ProcessCaptureResult(ftraceCapturePath, perfCapturePath, args.open_gpuvis, outPath)
+            rpcServer.cleanup()
             return True
 
         if args.command_exit:
@@ -771,25 +806,17 @@ def StandaloneMain(args):
     tracePath = TempPath('gputrace-', '.dat')
     ok = gpuTrace.CaptureTrace(tracePath)
 
-    capturePaths = [tracePath]
-
+    perfPath = None
     if ok and perfTrace.perfCapable:
         perfPath = TempPath('perf-', '.json')
         ok = perfTrace.CaptureTrace(perfPath)
-        capturePaths.append(perfPath)
 
-    if ok:
-        CreateArchive(args.output, capturePaths)
+    if not ok:
+        Log.error( "Failed to capture trace" )
 
-    for p in capturePaths:
-        try:
-            os.unlink(p)
-        except FileNotFoundError:
-            pass
-
-    if args.open_gpuvis:
-        GpuVis().OpenTrace(args.output)
-
+    ProcessCaptureResult(tracePath, perfPath, args.open_gpuvis, args.outpath.strip() )
+    RemoveFile(tracePath)
+    RemoveFile(perfPath)
 
 ####################################
 # Main/Input handling
