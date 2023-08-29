@@ -814,7 +814,7 @@ def StandaloneMain(args):
     if not ok:
         Log.error( "Failed to capture trace" )
 
-    ProcessCaptureResult(tracePath, perfPath, args.open_gpuvis, args.outpath.strip() )
+    ProcessCaptureResult(tracePath, perfPath, args.open_gpuvis, args.output.strip() )
     RemoveFile(tracePath)
     RemoveFile(perfPath)
 
