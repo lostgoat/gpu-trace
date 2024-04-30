@@ -284,6 +284,7 @@ class GpuTrace:
     def TraceSetup(self):
         try:
             AddPermissions("/sys/kernel/tracing/", stat.S_IXOTH)
+            AddPermissions("/sys/kernel/tracing/", stat.S_IROTH)
             AddPermissions("/sys/kernel/tracing/trace_marker", stat.S_IWOTH)
         except Exception as e:
             Die('Failed trace setup, are you root?', e)
