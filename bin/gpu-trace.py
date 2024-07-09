@@ -405,6 +405,9 @@ class GpuTrace:
         "amdgpu:amdgpu_sched_run_job",
         "amdgpu:amdgpu_ttm_bo_move",
         "*fence:*fence_signaled",
+        "amdgpu:amdgpu_vm_bo_map",
+        "amdgpu:amdgpu_vm_bo_unmap",
+
 
         # https://github.com/mikesart/gpuvis/wiki/TechDocs-Intel
         #

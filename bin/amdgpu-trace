@@ -199,6 +199,9 @@ function startTrace () {
     traceEvents+=" -e amdgpu:amdgpu_sched_run_job"
     traceEvents+=" -e amdgpu:amdgpu_ttm_bo_move"
     traceEvents+=" -e *fence:*fence_signaled"
+    traceEvents+=" -e amdgpu:amdgpu_vm_bo_map"
+    traceEvents+=" -e amdgpu:amdgpu_vm_bo_unmap"
+
 
     # https://github.com/mikesart/gpuvis/wiki/TechDocs-Intel
     #
