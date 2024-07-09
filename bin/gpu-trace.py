@@ -243,7 +243,7 @@ def CreateGPUVisPackage(ftraceCapturePath, perfCapturePath, outPath):
         else:
             Log.error(f"Failed to convert {perfCapturePath} to json, skipping")
     else:
-        Log.info(f"No perf cature detected");
+        Log.info(f"No perf capture detected");
 
     Log.info(f"Creating package: {outPath}")
     CreateArchive(outPath, capturePaths)
