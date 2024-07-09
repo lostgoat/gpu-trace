@@ -764,6 +764,7 @@ def ClientMain(args):
 
             if retcode is not Daemon.CAPTURE_SUCCESS:
                 Log.error(f"Failed to capture trace: response: {ret}")
+                return False
 
             ProcessCaptureResult(ftraceCapturePath, perfCapturePath, args.open_gpuvis, outPath)
             rpcServer.cleanup()
@@ -784,6 +785,7 @@ def ClientMain(args):
         if args.command_get_tracing_status:
             print( "1" if rpcServer.getTracingStatus() else "0" )
             
+    return True
 
 ####################################
 # Standalone
@@ -886,7 +888,8 @@ def Main():
         daemon = Daemon(args)
         daemon.Run()
     elif args.command_capture or args.command_exit or args.command_start or args.command_stop or args.command_get_tracing_status:
-        ClientMain(args)
+        ret = ClientMain(args)
+        sys.exit( 0 if ret else 1 )
     elif args.enable_startup_tracing is not None:
         State().config.SetConfigValue("StartupCapture", args.enable_startup_tracing)
     elif args.get_startup_tracing:
