@@ -140,6 +140,7 @@ REPORT_EDITOR="$(getDefaultReportEditor)"
 REPORT_GPUVIS="$(getDefaultReportVisualizer)"
 TRACEFS_ROOT=""
 TIMEOUT=0
+WAIT=0
 
 function printUsage() {
     pErr "Usage: $(basename $0) [options]"
@@ -148,6 +149,7 @@ function printUsage() {
     pErr "    -p, --wait-for-pid <pid>  Trace for the lifetime of <pid>"
     pErr "    -s, --snapshot-signal <n> Snapshot trace when signal <n> is received (default: ${SNAPSHOT_SIG}"
     pErr "    -t, --timeout <s>         Automatically end trace after <s> seconds (default: disabled)"
+    pErr "    -w, --wait <s>            Wait <s> seconds before starting the trace (default: disabled)"
     pErr "    -e, --exit-signal <n>     Trace until signal <n> is received (default: ${EXIT_SIG}"
     pErr "    -r, --report              Open a report in a text editor (default: ${REPORT_EDITOR})"
     pErr "        --editor <path>       Select a custom editor for a report"
@@ -166,6 +168,7 @@ while [[ $# -gt 0 ]]; do
         -p|--wait-for-pid) PID=$2; shift 2 ;;
         -s|--snapshot-signal) SNAPSHOT_SIG=$2; shift 2 ;;
         -t|--timeout) TIMEOUT="$2"; shift 2 ;;
+        -w|--wait) WAIT="$2"; shift 2 ;;
         -e|--exit-signal) EXIT_SIG=$2; shift 2 ;;
         -o|--output) TRACE_OUTPUT="$2"; shift 2 ;;
         -g|--gui) GUI=1; shift ;;
@@ -291,6 +294,11 @@ function setupTraceCmd () {
     ${TRACE_CMD} stat > /dev/null
     TRACEFS_ROOT=$(mount | grep tracefs | head -1 | awk '{ print $3 }')
 }
+
+if [ "${WAIT}" -gt 0 ] 2>/dev/null; then
+    echo "Waiting ${WAIT} seconds before starting trace..."
+    sleep ${WAIT}
+fi
 
 setupTraceCmd
 pushTrap "captureTrace; processReport; exit" $EXIT_SIG
