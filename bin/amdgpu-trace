@@ -139,6 +139,7 @@ TRACE_CMD="$(which trace-cmd)"
 REPORT_EDITOR="$(getDefaultReportEditor)"
 REPORT_GPUVIS="$(getDefaultReportVisualizer)"
 TRACEFS_ROOT=""
+TIMEOUT=0
 
 function printUsage() {
     pErr "Usage: $(basename $0) [options]"
@@ -146,6 +147,7 @@ function printUsage() {
     pErr "Options:"
     pErr "    -p, --wait-for-pid <pid>  Trace for the lifetime of <pid>"
     pErr "    -s, --snapshot-signal <n> Snapshot trace when signal <n> is received (default: ${SNAPSHOT_SIG}"
+    pErr "    -t, --timeout <s>         Automatically end trace after <s> seconds (default: disabled)"
     pErr "    -e, --exit-signal <n>     Trace until signal <n> is received (default: ${EXIT_SIG}"
     pErr "    -r, --report              Open a report in a text editor (default: ${REPORT_EDITOR})"
     pErr "        --editor <path>       Select a custom editor for a report"
@@ -163,6 +165,7 @@ while [[ $# -gt 0 ]]; do
         -v|--verbose) VERBOSE=1; shift ;;
         -p|--wait-for-pid) PID=$2; shift 2 ;;
         -s|--snapshot-signal) SNAPSHOT_SIG=$2; shift 2 ;;
+        -t|--timeout) TIMEOUT="$2"; shift 2 ;;
         -e|--exit-signal) EXIT_SIG=$2; shift 2 ;;
         -o|--output) TRACE_OUTPUT="$2"; shift 2 ;;
         -g|--gui) GUI=1; shift ;;
@@ -299,5 +302,18 @@ if [ "${PID}" != "$UNINIT" ]; then
     captureTrace
     processReport
 else
-    sleep inf
+    if [ "${TIMEOUT}" -gt 0 ] 2>/dev/null; then
+        pVerbose "Timeout enabled: ${TIMEOUT}s — will auto-send signal ${EXIT_SIG} to process group $$"
+
+        (
+            sleep "${TIMEOUT}"
+            pVerbose "Auto-sending exit signal ${EXIT_SIG} to process group -$$ after ${TIMEOUT}s"
+            # send to the entire process group so it behaves like Ctrl-C
+            kill -${EXIT_SIG} -$$ 2>/dev/null || true
+        ) &
+    else
+        pVerbose "No timeout configured, waiting for user Ctrl-C (current behaviour)"
+    fi
+
+    sleep infinity
 fi
