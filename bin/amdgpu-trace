@@ -103,7 +103,7 @@ function getDefaultReportEditor () {
     fi
 
     if [ -e "$(which kate)" ]; then
-        echo gedit
+        echo kate
         return
     fi
 
