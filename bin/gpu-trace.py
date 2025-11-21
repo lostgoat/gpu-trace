@@ -234,8 +234,11 @@ def ConvertPerfToJSON(perfCapturePath, jsonPath):
         Log.error(f"Could not convert perf trace to JSON: {e}")
         return False
 
-def CreateGPUVisPackage(ftraceCapturePath, perfCapturePath, outPath):
-    capturePaths=[ftraceCapturePath]
+def CreateGPUVisPackage(tracePost, ftraceCapturePath, perfCapturePath, outPath, duration):
+    trimPath = TempPath('gpuvis-', '.dat')
+    times = tracePost.FindTrimTimes(ftraceCapturePath, duration)
+    tracePost.Trim(ftraceCapturePath, trimPath, times[0], times[1])
+    capturePaths=[trimPath]
     if perfCapturePath is not None:
         jsonPath = TempPath('perf-', '.json')
         if ConvertPerfToJSON(perfCapturePath, jsonPath):
@@ -248,12 +251,48 @@ def CreateGPUVisPackage(ftraceCapturePath, perfCapturePath, outPath):
     Log.info(f"Creating package: {outPath}")
     CreateArchive(outPath, capturePaths)
 
-def ProcessCaptureResult(ftraceCapturePath, perfCapturePath, bOpenGpuVis, outPath):
-    CreateGPUVisPackage(ftraceCapturePath, perfCapturePath, outPath)
+def ProcessCaptureResult(tracePost, ftraceCapturePath, perfCapturePath, bOpenGpuVis, outPath, duration):
+    CreateGPUVisPackage(tracePost, ftraceCapturePath, perfCapturePath, outPath, duration)
     Log.info(f"Successfully generated trace package: {outPath}")
 
     if bOpenGpuVis:
         GpuVis().OpenTrace(outPath)
+
+####################################
+# Lightweight trace-cmd wrapper
+####################################
+class TracePostProcessor:
+    def __init__(self):
+        self.cmd = GetBinary('trace-cmd')
+
+    def Cmd(self, *args):
+        procArgs = [self.cmd]
+        for arg in args:
+            if isinstance(arg, list):
+                procArgs.extend(arg)
+            else:
+                procArgs.append(arg)
+        return RunCommand(procArgs)
+
+    def FindTrimTimes(self, path, duration):
+        Log.info(f"Finding ftrace capture start/stop times for {duration} second window")
+        # Find the last exec trace-cmd in the log, and use this as the end
+        # time, since it's likely to be our 'trace-cmd stop', or certainly
+        # no earlier than it.
+        filter = "sched_process_exec : filename==\"" + self.cmd + "\""
+        output = self.Cmd("report", "-t", "-i", path, "-F", filter)
+        for line in output.splitlines():
+            timeLine = line.split()
+
+        stopTime = float(timeLine[3].rstrip(':'))
+        startTime = stopTime - duration
+        return [ startTime, stopTime ]
+
+    def Trim(self, path, trimPath, startTime, stopTime):
+        # Remove data outside of our time window
+        Log.info(f"Filtering ftrace data to {startTime} .. {stopTime}")
+        self.Cmd("split", "-i", path, "-o", trimPath, str(startTime), str(stopTime))
+
 
 ####################################
 # Managing trace-cmd
@@ -754,6 +793,7 @@ class Daemon:
 def ClientMain(args):
     Log.debug('GPU trace client main')
     rpcServerUrl = f"http://localhost:{State().rpcServerPort}/"
+    tracePost = TracePostProcessor()
 
     with xmlrpc.client.ServerProxy(rpcServerUrl) as rpcServer:
         if args.command_capture:
@@ -769,7 +809,7 @@ def ClientMain(args):
                 Log.error(f"Failed to capture trace: response: {ret}")
                 return False
 
-            ProcessCaptureResult(ftraceCapturePath, perfCapturePath, args.open_gpuvis, outPath)
+            ProcessCaptureResult(tracePost, ftraceCapturePath, perfCapturePath, args.open_gpuvis, outPath, args.capture_duration)
             rpcServer.cleanup()
             return True
 
@@ -798,6 +838,7 @@ def StandaloneMain(args):
 
     gpuTrace = GpuTrace()
     gpuTrace.StartCapture()
+    tracePost = TracePostProcessor()
 
     perfTrace = PerfTrace()
 
@@ -820,7 +861,7 @@ def StandaloneMain(args):
     if not ok:
         Log.error( "Failed to capture trace" )
 
-    ProcessCaptureResult(tracePath, perfPath, args.open_gpuvis, args.output.strip() )
+    ProcessCaptureResult(tracePost, tracePath, perfPath, args.open_gpuvis, args.output.strip(), args.capture_duration)
     RemoveFile(tracePath)
     RemoveFile(perfPath)
 
@@ -842,6 +883,7 @@ def Main():
                         default="gpu-trace.zip", help="Trace output filename")
     parser.add_argument('--no-gpuvis', action="store_false", dest="open_gpuvis",
                         default=True, help="Don't open gpuvis when a capture is taken")
+    parser.add_argument('--duration', type=int, help="Maximum length of capture in seconds", dest="capture_duration", default=5)
 
     # Config commands
     parser.add_argument('--enable-startup-tracing', action=argparse.BooleanOptionalAction,
