@@ -225,10 +225,33 @@ def PerfCmd(*args, background=False):
     return RunCommand(procArgs, background)
 PerfCmd.cmd = GetBinary('perf')
 
-def ConvertPerfToJSON(perfCapturePath, jsonPath):
+def PerfCanFilter():
+    res = subprocess.run(
+        [GetBinary('perf'), "data", "convert", "--help"],
+        capture_output=True)
+    if res.stderr.find(b"--time") < 0:
+        Log.warning("perf data convert can't filter timestamps")
+        return False
+    return True
+
+def ConvertPerfToJSON(perfCapturePath, jsonPath, startTime, stopTime):
     Log.info(f"Converting trace to JSON")
     try:
-        PerfCmd( "data", "convert", "-i", perfCapturePath, "--to-json", jsonPath, "--force")
+        canFilter = PerfCanFilter()
+        cmd = [ "data", "convert", "-i", perfCapturePath, "--to-json", jsonPath, "--force" ]
+        if canFilter and (startTime > 0 or stopTime > 0) :
+            timestr = ""
+            if (startTime > 0) :
+                timestr = timestr + str(startTime)
+            timestr = timestr + ","
+            if (stopTime > 0) :
+                timestr = timestr + str(stopTime)
+
+            cmd = cmd + [ "--time", timestr ]
+
+            Log.info(f"Filtering perf trace to {startTime} .. {stopTime}")
+
+        PerfCmd(cmd)
         return True;
     except Exception as e:
         Log.error(f"Could not convert perf trace to JSON: {e}")
@@ -241,7 +264,7 @@ def CreateGPUVisPackage(tracePost, ftraceCapturePath, perfCapturePath, outPath, 
     capturePaths=[trimPath]
     if perfCapturePath is not None:
         jsonPath = TempPath('perf-', '.json')
-        if ConvertPerfToJSON(perfCapturePath, jsonPath):
+        if ConvertPerfToJSON(perfCapturePath, jsonPath, times[0], times[1]):
             capturePaths.append(jsonPath)
         else:
             Log.error(f"Failed to convert {perfCapturePath} to json, skipping")
