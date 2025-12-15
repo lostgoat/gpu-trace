@@ -428,19 +428,30 @@ class GpuTrace:
         self.TraceCmd("snapshot", "-f")
         self.TraceCmd("stop")
 
-    def CaptureTrace(self, path):
+    def PauseTrace(self):
         if not self.IsTraceEnabled():
-            Log.error("Attempted to capture trace, but no trace was enabled")
+            Log.error("Attempted to pause trace, but no trace was enabled")
+            return False
+
+        Log.debug("GPU Trace paused for capture")
+        self.TraceCmd("stop")
+        return True
+
+    def RestartTrace(self):
+        Log.debug("GPU Trace capture resuming")
+        self.TraceCmd("restart")
+
+    def CaptureTrace(self, path):
+        if not self.PauseTrace():
             return False
 
         Log.info(f"GPU Trace capture requested: {path}")
-        self.TraceCmd("stop")
         self.TraceCmd("extract", "-k", "-o", path)
 
         os.chmod(path, self.captureMask)
 
-        Log.debug("GPU Trace capture resuming")
-        self.TraceCmd("restart")
+        self.RestartTrace()
+
         return True
 
     def TraceCmd(self, *args):
