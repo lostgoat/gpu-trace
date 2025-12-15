@@ -257,10 +257,16 @@ def ConvertPerfToJSON(perfCapturePath, jsonPath, startTime, stopTime):
         Log.error(f"Could not convert perf trace to JSON: {e}")
         return False
 
+def ProcessFtrace(tracePost, inpath, outpath, startTime, stopTime):
+    tracePost.Trim(inpath, outpath, startTime, stopTime)
+
 def CreateGPUVisPackage(tracePost, ftraceCapturePath, perfCapturePath, outPath, duration):
     trimPath = TempPath('gpuvis-', '.dat')
     times = tracePost.FindTrimTimes(ftraceCapturePath, duration)
-    tracePost.Trim(ftraceCapturePath, trimPath, times[0], times[1])
+    ftrace_trim_thread = threading.Thread(target=ProcessFtrace,
+        args=(tracePost, ftraceCapturePath, trimPath, times[0], times[1]))
+    ftrace_trim_thread.start()
+
     capturePaths=[trimPath]
     if perfCapturePath is not None:
         jsonPath = TempPath('perf-', '.json')
@@ -270,6 +276,7 @@ def CreateGPUVisPackage(tracePost, ftraceCapturePath, perfCapturePath, outPath, 
             Log.error(f"Failed to convert {perfCapturePath} to json, skipping")
     else:
         Log.info(f"No perf capture detected");
+    ftrace_trim_thread.join()
 
     Log.info(f"Creating package: {outPath}")
     CreateArchive(outPath, capturePaths)
