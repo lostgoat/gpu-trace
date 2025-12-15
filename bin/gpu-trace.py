@@ -442,17 +442,10 @@ class GpuTrace:
         self.TraceCmd("restart")
 
     def CaptureTrace(self, path):
-        if not self.PauseTrace():
-            return False
-
         Log.info(f"GPU Trace capture requested: {path}")
         self.TraceCmd("extract", "-k", "-o", path)
 
         os.chmod(path, self.captureMask)
-
-        self.RestartTrace()
-
-        return True
 
     def TraceCmd(self, *args):
         procArgs = [self.traceCmd]
@@ -765,15 +758,21 @@ class Daemon:
 
         dictRet = {}
         tracePath = TempPath('gputrace-', '.dat')
-        ok = self.gpuTrace.CaptureTrace(tracePath)
+        ok = self.gpuTrace.PauseTrace()
+
         dictRet[ "ftracepath" ] = tracePath;
 
         if ok and self.perfTrace.perfCapable:
             perfPath = TempPath('perf-', '.perf')
-            ok = self.perfTrace.CaptureTrace(perfPath)
+            self.perfTrace.CaptureTrace(perfPath)
             dictRet[ "perftracepath" ] = perfPath;
         else:
             Log.info(f"Skipping perf trace capture: not capable")
+
+        if ok:
+            self.gpuTrace.CaptureTrace(tracePath)
+
+        self.gpuTrace.RestartTrace()
 
         dictRet[ "retcode" ] = Daemon.CAPTURE_SUCCESS if ok else Daemon.CAPTURE_FAILURE;
         return dictRet;
@@ -894,12 +893,17 @@ def StandaloneMain(args):
     State().traceExitEvent.wait()
 
     tracePath = TempPath('gputrace-', '.dat')
-    ok = gpuTrace.CaptureTrace(tracePath)
+    ok = gpuTrace.PauseTrace()
 
     perfPath = None
     if ok and perfTrace.perfCapable:
         perfPath = TempPath('perf-', '.json')
-        ok = perfTrace.CaptureTrace(perfPath)
+        perfTrace.CaptureTrace(perfPath)
+    else:
+       Log.info("Skipping perf trace capture: not capable")
+
+    if ok:
+        gpuTrace.CaptureTrace(tracePath)
 
     if not ok:
         Log.error( "Failed to capture trace" )
