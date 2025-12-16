@@ -225,73 +225,91 @@ def PerfCmd(*args, background=False):
     return RunCommand(procArgs, background)
 PerfCmd.cmd = GetBinary('perf')
 
-def ConvertPerfToJSON(perfCapturePath, jsonPath):
+def PerfCanFilter():
+    res = subprocess.run(
+        [GetBinary('perf'), "data", "convert", "--help"],
+        capture_output=True)
+    if res.stderr.find(b"--time") < 0:
+        Log.warning("perf data convert can't filter timestamps")
+        return False
+    return True
+
+def ConvertPerfToJSON(perfCapturePath, jsonPath, startTime, stopTime):
     Log.info(f"Converting trace to JSON")
     try:
-        PerfCmd( "data", "convert", "-i", perfCapturePath, "--to-json", jsonPath, "--force")
+        canFilter = PerfCanFilter()
+        cmd = [ "data", "convert", "-i", perfCapturePath, "--to-json", jsonPath, "--force" ]
+        if canFilter and (startTime > 0 or stopTime > 0) :
+            timestr = ""
+            if (startTime > 0) :
+                timestr = timestr + str(startTime)
+            timestr = timestr + ","
+            if (stopTime > 0) :
+                timestr = timestr + str(stopTime)
+
+            cmd = cmd + [ "--time", timestr ]
+
+            Log.info(f"Filtering perf trace to {startTime} .. {stopTime}")
+
+        PerfCmd(cmd)
         return True;
     except Exception as e:
         Log.error(f"Could not convert perf trace to JSON: {e}")
         return False
 
-def CreateGPUVisPackage(ftraceCapturePath, perfCapturePath, outPath):
-    capturePaths=[ftraceCapturePath]
+def ProcessFtrace(tracePost, inpath, outpath, startTime, stopTime):
+    tracePost.Trim(inpath, outpath, startTime, stopTime)
+    tracePost.ConvertVersion(outpath)
+
+def CreateGPUVisPackage(tracePost, ftraceCapturePath, perfCapturePath, outPath, duration):
+    trimPath = TempPath('gpuvis-', '.dat')
+    times = tracePost.FindTrimTimes(ftraceCapturePath, duration)
+    ftrace_trim_thread = threading.Thread(target=ProcessFtrace,
+        args=(tracePost, ftraceCapturePath, trimPath, times[0], times[1]))
+    ftrace_trim_thread.start()
+
+    capturePaths=[trimPath]
     if perfCapturePath is not None:
         jsonPath = TempPath('perf-', '.json')
-        if ConvertPerfToJSON(perfCapturePath, jsonPath):
+        if ConvertPerfToJSON(perfCapturePath, jsonPath, times[0], times[1]):
             capturePaths.append(jsonPath)
         else:
             Log.error(f"Failed to convert {perfCapturePath} to json, skipping")
     else:
         Log.info(f"No perf capture detected");
+    ftrace_trim_thread.join()
 
     Log.info(f"Creating package: {outPath}")
     CreateArchive(outPath, capturePaths)
 
-def ProcessCaptureResult(ftraceCapturePath, perfCapturePath, bOpenGpuVis, outPath):
-    CreateGPUVisPackage(ftraceCapturePath, perfCapturePath, outPath)
+def ProcessCaptureResult(tracePost, ftraceCapturePath, perfCapturePath, bOpenGpuVis, outPath, duration):
+    CreateGPUVisPackage(tracePost, ftraceCapturePath, perfCapturePath, outPath, duration)
     Log.info(f"Successfully generated trace package: {outPath}")
 
     if bOpenGpuVis:
         GpuVis().OpenTrace(outPath)
 
 ####################################
-# Managing trace-cmd
+# Lightweight trace-cmd wrapper
 ####################################
-class GpuTrace:
+class TracePostProcessor:
     def __init__(self):
-        self.traceCmd = GetBinary('trace-cmd')
+        self.cmd = GetBinary('trace-cmd')
         self.traceCmdVersion = self.GetTraceCmdVersion()
         self.NeedConvert = self.HaveTraceCmdVersion([3, 1, 1])
-        self.captureMask = 0o666
-        self.traceCapable = False
 
-        # A bit of sanity checking
-        self.EnsureTraceCmdCapable()
-
-        self.TraceSetup()
-
-        self.traceEventArgs = ["-C", "perf"]
-        for event in GpuTrace.traceEvents:
-            self.traceEventArgs.append("-e")
-            self.traceEventArgs.append(f"{event}")
-
-    def __del__(self):
-        if self.traceCapable:
-            if self.IsTraceEnabled():
-                self.StopCapture(quiet=True)
-
-    def TraceSetup(self):
-        try:
-            AddPermissions("/sys/kernel/tracing/", stat.S_IXOTH)
-            AddPermissions("/sys/kernel/tracing/", stat.S_IROTH)
-            AddPermissions("/sys/kernel/tracing/trace_marker", stat.S_IWOTH)
-        except Exception as e:
-            Die('Failed trace setup, are you root?', e)
+    def Cmd(self, *args):
+        procArgs = [self.cmd]
+        for arg in args:
+            if isinstance(arg, list):
+                procArgs.extend(arg)
+            else:
+                procArgs.append(arg)
+        return RunCommand(procArgs)
 
     def GetTraceCmdVersion(self):
         try:
-            output = RunCommand(self.traceCmd, False, True)
+            output = RunCommand(self.cmd, False, True)
             for line in output.splitlines():
                 if "version" in line:
                     sVersion = line.split(" ")[2].split(".")
@@ -317,6 +335,66 @@ class GpuTrace:
             return True
 
         return False
+
+    def ConvertVersion(self, path):
+        # gpuvis currently only support file version 6
+        if self.NeedConvert:
+            Log.info(f"GPU Trace needs conversion to compatible format")
+            convertSource = path + ".tmp"
+            os.rename(path, convertSource)
+            self.Cmd("convert", "--file-version", "6", "-i", convertSource, "-o", path)
+
+    def FindTrimTimes(self, path, duration):
+        Log.info(f"Finding ftrace capture start/stop times for {duration} second window")
+        # Find the last exec trace-cmd in the log, and use this as the end
+        # time, since it's likely to be our 'trace-cmd stop', or certainly
+        # no earlier than it.
+        filter = "sched_process_exec : filename==\"" + self.cmd + "\""
+        output = self.Cmd("report", "-t", "-i", path, "-F", filter)
+        for line in output.splitlines():
+            timeLine = line.split()
+
+        stopTime = float(timeLine[3].rstrip(':'))
+        startTime = stopTime - duration
+        return [ startTime, stopTime ]
+
+    def Trim(self, path, trimPath, startTime, stopTime):
+        # Remove data outside of our time window
+        Log.info(f"Filtering ftrace data to {startTime} .. {stopTime}")
+        self.Cmd("split", "-i", path, "-o", trimPath, str(startTime), str(stopTime))
+
+
+####################################
+# Managing trace-cmd
+####################################
+class GpuTrace:
+    def __init__(self):
+        self.traceCmd = GetBinary('trace-cmd')
+        self.captureMask = 0o666
+        self.traceCapable = False
+
+        # A bit of sanity checking
+        self.EnsureTraceCmdCapable()
+
+        self.TraceSetup()
+
+        self.traceEventArgs = ["-C", "perf"]
+        for event in GpuTrace.traceEvents:
+            self.traceEventArgs.append("-e")
+            self.traceEventArgs.append(f"{event}")
+
+    def __del__(self):
+        if self.traceCapable:
+            if self.IsTraceEnabled():
+                self.StopCapture(quiet=True)
+
+    def TraceSetup(self):
+        try:
+            AddPermissions("/sys/kernel/tracing/", stat.S_IXOTH)
+            AddPermissions("/sys/kernel/tracing/", stat.S_IROTH)
+            AddPermissions("/sys/kernel/tracing/trace_marker", stat.S_IWOTH)
+        except Exception as e:
+            Die('Failed trace setup, are you root?', e)
 
     def EnsureTraceCmdCapable(self):
         try:
@@ -350,27 +428,24 @@ class GpuTrace:
         self.TraceCmd("snapshot", "-f")
         self.TraceCmd("stop")
 
-    def CaptureTrace(self, path):
+    def PauseTrace(self):
         if not self.IsTraceEnabled():
-            Log.error("Attempted to capture trace, but no trace was enabled")
+            Log.error("Attempted to pause trace, but no trace was enabled")
             return False
 
-        Log.info(f"GPU Trace capture requested: {path}")
+        Log.debug("GPU Trace paused for capture")
         self.TraceCmd("stop")
-        self.TraceCmd("extract", "-k", "-o", path)
+        return True
 
-        # gpuvis currently only support file version 6
-        if self.NeedConvert:
-            Log.info(f"GPU Trace needs conversion to compatible format")
-            convertSource = path + ".tmp"
-            os.rename(path, convertSource)
-            self.TraceCmd("convert", "--file-version", "6", "-i", convertSource, "-o", path)
-
-        os.chmod(path, self.captureMask)
-
+    def RestartTrace(self):
         Log.debug("GPU Trace capture resuming")
         self.TraceCmd("restart")
-        return True
+
+    def CaptureTrace(self, path):
+        Log.info(f"GPU Trace capture requested: {path}")
+        self.TraceCmd("extract", "-k", "-o", path)
+
+        os.chmod(path, self.captureMask)
 
     def TraceCmd(self, *args):
         procArgs = [self.traceCmd]
@@ -683,15 +758,21 @@ class Daemon:
 
         dictRet = {}
         tracePath = TempPath('gputrace-', '.dat')
-        ok = self.gpuTrace.CaptureTrace(tracePath)
+        ok = self.gpuTrace.PauseTrace()
+
         dictRet[ "ftracepath" ] = tracePath;
 
         if ok and self.perfTrace.perfCapable:
             perfPath = TempPath('perf-', '.perf')
-            ok = self.perfTrace.CaptureTrace(perfPath)
+            self.perfTrace.CaptureTrace(perfPath)
             dictRet[ "perftracepath" ] = perfPath;
         else:
             Log.info(f"Skipping perf trace capture: not capable")
+
+        if ok:
+            self.gpuTrace.CaptureTrace(tracePath)
+
+        self.gpuTrace.RestartTrace()
 
         dictRet[ "retcode" ] = Daemon.CAPTURE_SUCCESS if ok else Daemon.CAPTURE_FAILURE;
         return dictRet;
@@ -754,6 +835,7 @@ class Daemon:
 def ClientMain(args):
     Log.debug('GPU trace client main')
     rpcServerUrl = f"http://localhost:{State().rpcServerPort}/"
+    tracePost = TracePostProcessor()
 
     with xmlrpc.client.ServerProxy(rpcServerUrl) as rpcServer:
         if args.command_capture:
@@ -769,7 +851,7 @@ def ClientMain(args):
                 Log.error(f"Failed to capture trace: response: {ret}")
                 return False
 
-            ProcessCaptureResult(ftraceCapturePath, perfCapturePath, args.open_gpuvis, outPath)
+            ProcessCaptureResult(tracePost, ftraceCapturePath, perfCapturePath, args.open_gpuvis, outPath, args.capture_duration)
             rpcServer.cleanup()
             return True
 
@@ -798,6 +880,7 @@ def StandaloneMain(args):
 
     gpuTrace = GpuTrace()
     gpuTrace.StartCapture()
+    tracePost = TracePostProcessor()
 
     perfTrace = PerfTrace()
 
@@ -810,17 +893,22 @@ def StandaloneMain(args):
     State().traceExitEvent.wait()
 
     tracePath = TempPath('gputrace-', '.dat')
-    ok = gpuTrace.CaptureTrace(tracePath)
+    ok = gpuTrace.PauseTrace()
 
     perfPath = None
     if ok and perfTrace.perfCapable:
         perfPath = TempPath('perf-', '.json')
-        ok = perfTrace.CaptureTrace(perfPath)
+        perfTrace.CaptureTrace(perfPath)
+    else:
+       Log.info("Skipping perf trace capture: not capable")
+
+    if ok:
+        gpuTrace.CaptureTrace(tracePath)
 
     if not ok:
         Log.error( "Failed to capture trace" )
 
-    ProcessCaptureResult(tracePath, perfPath, args.open_gpuvis, args.output.strip() )
+    ProcessCaptureResult(tracePost, tracePath, perfPath, args.open_gpuvis, args.output.strip(), args.capture_duration)
     RemoveFile(tracePath)
     RemoveFile(perfPath)
 
@@ -842,6 +930,7 @@ def Main():
                         default="gpu-trace.zip", help="Trace output filename")
     parser.add_argument('--no-gpuvis', action="store_false", dest="open_gpuvis",
                         default=True, help="Don't open gpuvis when a capture is taken")
+    parser.add_argument('--duration', type=int, help="Maximum length of capture in seconds", dest="capture_duration", default=5)
 
     # Config commands
     parser.add_argument('--enable-startup-tracing', action=argparse.BooleanOptionalAction,
