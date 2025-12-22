@@ -679,22 +679,22 @@ class Daemon:
     def RpcCapture(self):
         Log.info(f"Executing capture command")
 
-        self.CleanupIntermediates();
+        self.CleanupIntermediates()
 
         dictRet = {}
         tracePath = TempPath('gputrace-', '.dat')
         ok = self.gpuTrace.CaptureTrace(tracePath)
-        dictRet[ "ftracepath" ] = tracePath;
+        dictRet[ "ftracepath" ] = tracePath
 
         if ok and self.perfTrace.perfCapable:
             perfPath = TempPath('perf-', '.perf')
             ok = self.perfTrace.CaptureTrace(perfPath)
-            dictRet[ "perftracepath" ] = perfPath;
+            dictRet[ "perftracepath" ] = perfPath
         else:
             Log.info(f"Skipping perf trace capture: not capable")
 
         dictRet[ "retcode" ] = Daemon.CAPTURE_SUCCESS if ok else Daemon.CAPTURE_FAILURE;
-        return dictRet;
+        return dictRet
 
     def RpcStart(self, *, quiet=False):
         if not quiet:
