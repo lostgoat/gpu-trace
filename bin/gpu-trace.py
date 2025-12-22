@@ -44,6 +44,9 @@ import string
 import glob
 from zipfile import ZipFile
 
+# For logging purposes output directly to Log
+Log = logging.getLogger('gpu-trace')
+
 
 ####################################
 # Config
@@ -65,7 +68,8 @@ class Config:
         try:
             with open(self.GetConfigFile(), 'r') as f:
                 self.jsonData = json.load(f)
-        except:
+        except Exception as e:
+            Log.debug(f"Failed to load config file: {e}")
             self.jsonData = {}
 
     def SaveConfig(self):
@@ -150,9 +154,6 @@ def CreateArchive(out_path, paths):
             z.write(p, arcname=os.path.basename(p))
 
 
-# For logging purposes output directly to Log
-Log = logging.getLogger('gpu-trace')
-
 def SetupLogging(logPath, logLevel):
     Log.setLevel(logLevel)
 
@@ -207,7 +208,8 @@ def IsFdValid(fd):
     try:
         os.fstat(fd)
         return True
-    except:
+    except Exception as e:
+        Log.debug(f"File descriptor {fd} is not valid: {e}")
         return False
 
 def AddPermissions(path, mask):
