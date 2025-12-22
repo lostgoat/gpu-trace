@@ -228,7 +228,7 @@ def PerfCmd(*args, background=False):
 PerfCmd.cmd = GetBinary('perf')
 
 def ConvertPerfToJSON(perfCapturePath, jsonPath):
-    Log.info(f"Converting trace to JSON")
+    Log.info("Converting trace to JSON")
     try:
         PerfCmd( "data", "convert", "-i", perfCapturePath, "--to-json", jsonPath, "--force")
         return True;
@@ -245,7 +245,7 @@ def CreateGPUVisPackage(ftraceCapturePath, perfCapturePath, outPath):
         else:
             Log.error(f"Failed to convert {perfCapturePath} to json, skipping")
     else:
-        Log.info(f"No perf capture detected");
+        Log.info("No perf capture detected");
 
     Log.info(f"Creating package: {outPath}")
     CreateArchive(outPath, capturePaths)
@@ -363,7 +363,7 @@ class GpuTrace:
 
         # gpuvis currently only support file version 6
         if self.NeedConvert:
-            Log.info(f"GPU Trace needs conversion to compatible format")
+            Log.info("GPU Trace needs conversion to compatible format")
             convertSource = path + ".tmp"
             os.rename(path, convertSource)
             self.TraceCmd("convert", "--file-version", "6", "-i", convertSource, "-o", path)
@@ -679,7 +679,7 @@ class Daemon:
         CleanupTempFiles()
 
     def RpcCapture(self):
-        Log.info(f"Executing capture command")
+        Log.info("Executing capture command")
 
         self.CleanupIntermediates()
 
@@ -693,14 +693,14 @@ class Daemon:
             ok = self.perfTrace.CaptureTrace(perfPath)
             dictRet[ "perftracepath" ] = perfPath
         else:
-            Log.info(f"Skipping perf trace capture: not capable")
+            Log.info("Skipping perf trace capture: not capable")
 
         dictRet[ "retcode" ] = Daemon.CAPTURE_SUCCESS if ok else Daemon.CAPTURE_FAILURE;
         return dictRet
 
     def RpcStart(self, *, quiet=False):
         if not quiet:
-            Log.info(f"Executing start command")
+            Log.info("Executing start command")
 
         if self.capturing:
             return True
@@ -714,7 +714,7 @@ class Daemon:
 
     def RpcStop(self, *, quiet=False):
         if not quiet:
-            Log.info(f"Executing stop command")
+            Log.info("Executing stop command")
 
         if not self.capturing:
             return True
@@ -727,16 +727,16 @@ class Daemon:
         return True
 
     def RpcExit(self):
-        Log.info(f"Executing exit command")
+        Log.info("Executing exit command")
         self.Shutdown()
         return True
 
     def RpcGetTracingStatus(self):
-        Log.info(f"Executing get tracing status command")
+        Log.info("Executing get tracing status command")
         return self.capturing
 
     def RpcCleanup(self):
-        Log.info(f"Executing cleanup command")
+        Log.info("Executing cleanup command")
         self.CleanupIntermediates()
         return True
 
