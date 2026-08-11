@@ -34,7 +34,6 @@ import shutil
 import signal
 import tempfile
 import threading
-import _thread
 import atexit
 from xmlrpc.server import SimpleXMLRPCServer
 import xmlrpc.client
@@ -646,6 +645,7 @@ class Daemon:
         self.perfTrace = PerfTrace()
         self.capturing = False
         self.captureMask = 0o666
+        self.shutdownThread = None
 
         if not self.perfTrace.perfCapable:
             Log.warning(
@@ -661,6 +661,8 @@ class Daemon:
     def Run(self):
         Log.info('GPU Trace daemon ready')
         self.server.serve_forever()
+        if self.shutdownThread:
+            self.shutdownThread.join()
         Log.info('GPU Trace daemon exiting')
 
     @staticmethod
@@ -671,7 +673,8 @@ class Daemon:
 
     def Shutdown(self):
         Log.info("Daemon shutdown request received")
-        _thread.start_new_thread(Daemon.ShutdownWork, (self.server,))
+        self.shutdownThread = threading.Thread(target=Daemon.ShutdownWork, args=(self.server,))
+        self.shutdownThread.start()
         self.RpcStop(quiet=True)
 
     def CleanupIntermediates(self):
