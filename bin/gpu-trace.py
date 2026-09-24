@@ -871,10 +871,7 @@ def Main():
     args.output = os.path.realpath(args.output)
 
     if not args.logfile:
-        if args.daemon:
-            args.logfile = '/var/log/gpu-trace-daemon.log'
-        else:
-            args.logfile = 'gpu-trace.log'
+        args.logfile = 'gpu-trace.log'
 
     try:
         logLevel = logging.DEBUG if args.verbose else logging.INFO

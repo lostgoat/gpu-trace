@@ -3,8 +3,8 @@ Description=GPU performance capture daemon
 
 [Service]
 Environment=HOME=%h
-ExecStart=##INSTALL_PREFIX##/bin/gpu-trace --daemon
-ExecStop=##INSTALL_PREFIX##/bin/gpu-trace --exit
+ExecStart=##INSTALL_PREFIX##bin/gpu-trace -l /var/log/gpu-trace-daemon.log --daemon
+ExecStop=##INSTALL_PREFIX##bin/gpu-trace -l /var/log/gpu-trace-daemon.log --exit
 
 [Install]
 WantedBy=multi-user.target
